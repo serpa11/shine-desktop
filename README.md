@@ -1,6 +1,6 @@
 # Shine Desktop
 
-A Windows desktop app built from [shineai-9mr.pages.dev](https://shineai-9mr.pages.dev/).
+It is Shine but for Windows!
 
 It loads the Shine site inside a real window and adds only the things a
 browser tab cannot do well it can accounts tho lol:
