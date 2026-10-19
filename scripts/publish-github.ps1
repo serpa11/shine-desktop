@@ -75,14 +75,23 @@ function Invoke-Native {
     }
 }
 
+# -ShowOutput is declared on each wrapper as well as on Invoke-Native. Without
+# it here, ValueFromRemainingArguments would swallow it and hand "-ShowOutput"
+# to gh as if it were one of its own flags.
 function Invoke-Gh {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    Invoke-Native -FilePath 'gh' -Arguments $Arguments
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments,
+        [switch]$ShowOutput
+    )
+    Invoke-Native -FilePath 'gh' -Arguments $Arguments -ShowOutput:$ShowOutput
 }
 
 function Invoke-Git {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    Invoke-Native -FilePath 'git' -Arguments $Arguments
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments,
+        [switch]$ShowOutput
+    )
+    Invoke-Native -FilePath 'git' -Arguments $Arguments -ShowOutput:$ShowOutput
 }
 
 # Convenience readers for the last Invoke-Native result.
