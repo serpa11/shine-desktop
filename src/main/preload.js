@@ -43,7 +43,7 @@ contextBridge.exposeInMainWorld('shineDesktop', {
   window: {
     minimize: () => invoke('window:minimize'),
     toggleMaximize: () => invoke('window:toggle-maximize'),
-    quit: () => invoke('window:quit'),
+    state: () => invoke('window:state'),
     onStateChange: (cb) => subscribe('shine:window-state', cb),
   },
 
@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('shineDesktop', {
   app: {
     showItemInFolder: (p) => invoke('app:show-item', { path: p }),
   },
+
+  /* Quit, for the close button */
+  quit: () => invoke('window:quit'),
 
   /* PC Control */
   pc: {

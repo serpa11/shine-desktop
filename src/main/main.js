@@ -131,6 +131,7 @@ function registerIpc() {
   /* Window buttons */
   ipcMain.handle('window:minimize', () => windowManager.controls.minimize());
   ipcMain.handle('window:toggle-maximize', () => windowManager.controls.toggleMaximize());
+  ipcMain.handle('window:state', () => windowManager.windowState());
   ipcMain.handle('window:quit', () => windowManager.controls.quit());
 
   ipcMain.handle('app:show-item', (_e, { path: p }) => {
@@ -307,6 +308,15 @@ app.whenReady().then(() => {
   const win = windowManager.createWindow();
   if (isDebugDump) require('./diagnostics').attach(win);
   if (isDrive) require('../../test/driver').attach(win);
+  if (process.argv.includes('--drive-profile')) {
+    require('../../test/profile-driver')
+      .run(win, process.argv[process.argv.indexOf('--drive-profile') + 1] || 'profile-result.json')
+      .then(() => app.quit())
+      .catch((err) => {
+        console.error('profile driver failed:', err);
+        app.quit();
+      });
+  }
 
   win.webContents.on('did-finish-load', () => {
     send(win, 'shine:pc-status', agent.status());

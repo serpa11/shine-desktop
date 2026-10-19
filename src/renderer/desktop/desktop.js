@@ -329,7 +329,7 @@
         el('div', { class: 'shine-tb-win' }, [
           windowButton('minimize', 'Minimise', function () { D.window.minimize(); }),
           windowButton('maximize', 'Maximise', function () { D.window.toggleMaximize(); }),
-          windowButton('close', 'Close Shine', function () { D.window.quit(); }, 'exit'),
+          windowButton('close', 'Close Shine', function () { D.quit(); }, 'exit'),
         ]),
       ]);
 
@@ -740,7 +740,7 @@
 
     function refreshTitle() {
       Titlebar.setAccount(current);
-      installAskWrapper();
+      installProfileInterception();
     }
 
     function load() {
@@ -753,7 +753,7 @@
 
     /** Re-wrap ask() after a sign-in or sign-out. */
     function refresh() {
-      installAskWrapper();
+      installProfileInterception();
     }
 
     return { load: load, refresh: refresh, toggle: toggle, get current() { return current; } };
@@ -1281,37 +1281,130 @@
   })();
 
   /* ======================================================================
-     Profile context for the site's own chat
+     Profile answers when no AI provider is connected
 
-     The site calls window.ask(text) with whatever the user typed. Wrapping
-     it lets the signed-in user's name and username ride along with the
-     request, so both the AI providers and the site's built-in non-AI replies
-     know who they are talking to. The visible message stays exactly as typed.
+     The profile itself already travels with every AI request (profile.js in
+     the main process), so nothing is ever added to what you type. But the
+     site also has built-in replies of its own, used when no provider is set,
+     and those are fixed text on Shine's own server - there is no way to
+     teach them about you.
+
+     So for the handful of questions that are purely about you, with no
+     provider to ask, Shine answers from your profile directly instead of
+     returning a canned reply. Everything else is left completely alone.
      ====================================================================== */
 
-  function installAskWrapper() {
+  function currentComposerText() {
+    var box =
+      document.querySelector('.composer-wrap textarea') ||
+      document.getElementById('prompt') ||
+      document.querySelector('textarea');
+    return box ? String(box.value || '') : '';
+  }
+
+  function siteIsBusy() {
+    var btn = document.getElementById('actionBtn');
+    return Boolean(btn && btn.title === 'Stop Generation');
+  }
+
+  function isProfileQuestion(text) {
+    var t = String(text || '').toLowerCase();
+    var patterns = [
+      /\bwhat(?:'s| is| are)?\s+my\s+name\b/,
+      /\bwhat(?:'s| is| are)?\s+my\s+user\s?name\b/,
+      /\bwho\s+am\s+i\b/,
+      /\bwhat(?:'s| is)?\s+my\s+(profile|account|picture|pfp|avatar)\b/,
+      /\bdescribe\s+my\s+(profile\s+picture|pfp|picture|avatar)\b/,
+      /\bwhat\s+do\s+you\s+call\s+me\b/,
+      /\bmy\s+username\b/,
+    ];
+    for (var i = 0; i < patterns.length; i += 1) {
+      if (patterns[i].test(t)) return true;
+    }
+    return false;
+  }
+
+  function profileAnswer(account, avatarDataUrl) {
+    var lines = ['From your Shine profile:', '', 'name: ' + (account.displayName || account.username), 'username: ' + account.username];
+    if (avatarDataUrl) {
+      lines.push('', 'This is your saved profile picture.');
+    } else {
+      lines.push('profile picture: none set');
+      lines.push('');
+      lines.push('Set one from your account to let an AI provider describe it.');
+    }
+    lines.push('');
+    lines.push('Connect an AI provider in Shine Settings and I can answer far more, and describe your profile picture in detail.');
+    return lines.join('\n');
+  }
+
+  function renderLocalExchange(typed, answer, avatarDataUrl) {
+    var convo = document.querySelector('.conversation');
+    if (!convo) return;
+
+    var welcome = document.querySelector('.welcome');
+    if (welcome) welcome.style.display = 'none';
+    convo.classList.add('show');
+
+    convo.appendChild(el('div', { class: 'message user', text: typed }));
+
+    var body = el('div', {});
+    body.innerHTML = answer
+      .split('\n')
+      .filter(function (line) { return line.trim(); })
+      .map(function (line) { return '<p>' + escapeHtml(line) + '</p>'; })
+      .join('');
+
+    if (avatarDataUrl) {
+      body.appendChild(
+        el('div', { class: 'shine-message-image-card' }, [
+          el('img', { src: avatarDataUrl, alt: 'Your profile picture' }),
+        ])
+      );
+    }
+
+    convo.appendChild(el('div', { class: 'message assistant' }, [body]));
+
+    try {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    } catch (e) {
+      /* scrolling is cosmetic */
+    }
+  }
+
+  function installProfileInterception() {
     var original = window.ask;
     if (typeof original !== 'function' || original.__shineWrapped) return;
     if (!Account.current) return;
 
     var wrapped = function (text, options) {
-      var opts = options || {};
       var account = Account.current;
-      if (!account) return original.apply(this, arguments);
 
-      var preamble =
-        '[About the person you are talking to]\n' +
-        'username: ' + account.username + '\n' +
-        'name: ' + (account.displayName || account.username) + '\n' +
-        'profile picture: ' + (account.hasAvatar ? 'set, stored on their account' : 'none set') + '\n' +
-        '[/About the person you are talking to]\n\n';
+      // No account, a request already running (so Stop still works), or an AI
+      // provider is connected and already receives the profile: pass through
+      // untouched.
+      if (!account || siteIsBusy() || ShineStore.ai().activeProvider) {
+        return original.apply(this, arguments);
+      }
 
-      var sent = preamble + text;
-      // Keep the message the user typed as the one they see.
-      var next = {};
-      Object.keys(opts).forEach(function (k) { next[k] = opts[k]; });
-      if (typeof next.displayMessage !== 'string') next.displayMessage = String(text || '');
-      return original.call(this, sent, next);
+      // The site calls ask() with no arguments and reads the composer itself.
+      var typed = text === undefined || text === null || text === '' ? currentComposerText() : String(text);
+      if (!typed.trim() || !isProfileQuestion(typed)) {
+        return original.apply(this, arguments);
+      }
+
+      var box = document.querySelector('.composer-wrap textarea') || document.getElementById('prompt');
+      if (box) box.value = '';
+
+      var avatar = account.hasAvatar
+        ? D.account.avatar(account.username, 192).then(function (r) { return r && r.ok ? r.dataUrl : null; })
+        : Promise.resolve(null);
+
+      avatar.then(function (dataUrl) {
+        renderLocalExchange(typed.trim(), profileAnswer(account, dataUrl), dataUrl);
+      });
+
+      return Promise.resolve();
     };
 
     wrapped.__shineWrapped = true;
@@ -1332,15 +1425,30 @@
     Titlebar.build();
     Agent.install();
 
+    // Register every listener before making any call. A single failing call
+    // must never leave approvals or the account signed out of the app.
     D.window.onStateChange(Titlebar.refreshWindowState);
-    D.window.state().then(Titlebar.refreshWindowState);
-
     D.pc.onStatusChange(Agent.applyStatus);
     D.pc.onApprovalRequest(Approvals.handle);
 
-    D.pc.status().then(Agent.applyStatus);
+    // Each of these is independent; none may block the others.
+    quietly(() => D.window.state().then(Titlebar.refreshWindowState));
+    quietly(() => D.pc.status().then(Agent.applyStatus));
+    quietly(() => Account.load().then(installProfileInterception));
+  }
 
-    Account.load().then(installAskWrapper);
+  /** Run something whose failure should be logged, never fatal. */
+  function quietly(fn) {
+    try {
+      var result = fn();
+      if (result && typeof result.catch === 'function') result.catch(logQuietly);
+    } catch (err) {
+      logQuietly(err);
+    }
+  }
+
+  function logQuietly(err) {
+    console.warn('[shine-desktop]', (err && err.message) || err);
   }
 
   // Keep the window bar alive if the page replaces its document.
@@ -1368,7 +1476,7 @@
     agent: Agent,
     log: Log,
     account: Account,
-    installAskWrapper: installAskWrapper,
+    installProfileInterception: installProfileInterception,
   };
   window.__shineDesktopUi = true;
 })();
