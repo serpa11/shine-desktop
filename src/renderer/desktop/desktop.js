@@ -1196,7 +1196,7 @@
         if (!shouldHandle(input)) return nativeFetch.apply(this, arguments);
         var ctx = this;
         var args = arguments;
-        return handle(input, init).then(function (result) {
+        return handle(input, init, args[1]).then(function (result) {
           return result || nativeFetch.apply(ctx, args);
         });
       };
@@ -1216,7 +1216,7 @@
       return true;
     }
 
-    function handle(input, init) {
+    function handle(input, init, rawInit) {
       var url = typeof input === 'string' ? input : (input && input.url) || '';
       if (/\/audio\/transcriptions/i.test(url)) return transcribe(input, init);
 
@@ -1226,27 +1226,64 @@
       // Otherwise every provider request goes through the main process. That
       // removes CORS and mixed-content walls (so local models work) and is
       // where the signed-in user's profile is attached.
-      if (matchProvider(url)) return proxy(input, init);
+      if (matchProvider(url)) return proxy(input, init, rawInit);
       return null;
     }
 
     var proxySeq = 0;
 
     /**
+     * Reads request headers into a plain object.
+     *
+     * The site builds them as a plain object literal - {'Content-Type': ...}
+     * with headers['Authorization'] = 'Bearer ' + key - so it has no forEach.
+     * Copying only when forEach exists silently discarded the API key on every
+     * request, which is why this has to handle all three shapes.
+     */
+    function collectHeaders(raw) {
+      var out = {};
+      if (!raw) return out;
+      try {
+        // An array of [name, value] pairs, which is what fetch() accepts.
+        if (Array.isArray(raw)) {
+          for (var p = 0; p < raw.length; p += 1) {
+            if (raw[p] && raw[p].length >= 2) out[String(raw[p][0])] = String(raw[p][1]);
+          }
+          return out;
+        }
+        if (typeof raw.forEach === 'function') {
+          // A Headers instance.
+          raw.forEach(function (value, key) { out[key] = String(value); });
+          return out;
+        }
+        if (typeof raw === 'object') {
+          // A plain object literal, which is what the site passes.
+          var keys = Object.keys(raw);
+          for (var i = 0; i < keys.length; i += 1) {
+            var value = raw[keys[i]];
+            if (value !== undefined && value !== null) out[keys[i]] = String(value);
+          }
+        }
+      } catch (e) {
+        return {};
+      }
+      return out;
+    }
+
+    /**
      * Replay a provider request from the main process, where it is free of the
      * browser's cross-origin and mixed-content restrictions.
      */
-    async function proxy(input, init) {
+    async function proxy(input, init, rawInit) {
       var url = typeof input === 'string' ? input : (input && input.url) || '';
-      var headers = {};
-      var raw = (init && init.headers) || (input && input.headers);
-      if (raw && typeof raw.forEach === 'function') {
-        try {
-          raw.forEach(function (value, key) { headers[key] = value; });
-        } catch (e) {
-          headers = {};
-        }
-      }
+
+      // Headers can arrive either as init.headers or as a property of the
+      // Request. When init.headers is missing entirely, init is usually a
+      // Request itself and the headers live on it - reading only init.headers
+      // silently dropped the Authorization header.
+      var headers = collectHeaders(
+        (rawInit && rawInit.headers) || (init && init.headers) || (input && input.headers)
+      );
 
       proxySeq += 1;
       var id = 'proxy-' + proxySeq;

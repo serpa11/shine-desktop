@@ -87,6 +87,28 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && /\/chat\/completions/.test(req.url)) {
     const body = await readBody(req);
+
+    // Enforce auth the way a real OpenAI-compatible endpoint does. Without
+    // this the mock happily answered requests that had no Authorization
+    // header at all, which is exactly the bug this now guards: the desktop
+    // app was silently dropping the API key on every provider request.
+    const required = process.env.MOCK_REQUIRE_AUTH;
+    if (required) {
+      const auth = req.headers.authorization || '';
+      const xkey = req.headers['x-api-key'] || '';
+      const urlKey = /[?&]key=/.test(req.url || '');
+      const good =
+        auth === `Bearer ${required}` ||
+        xkey === required ||
+        (urlKey && new URL(req.url, 'http://x').searchParams.get('key') === required);
+      if (!good) {
+        process.stdout.write(`[mock] REJECTED request #${requests.length + 1} - bad or missing key\n`);
+        requests.push({ url: req.url, model: body.model, rejected: true });
+        return send(res, 401, { error: { message: 'Invalid API Key' } });
+      }
+      process.stdout.write(`[mock] accepted auth on request #${requests.length + 1}\n`);
+    }
+
     requests.push({ url: req.url, tools: (body.tools || []).length, model: body.model, messages: (body.messages || []).length });
     process.stdout.write(`[mock] chat request #${requests.length} tools=${(body.tools || []).length} model=${body.model}\n`);
 

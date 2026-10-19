@@ -308,6 +308,18 @@ app.whenReady().then(() => {
   const win = windowManager.createWindow();
   if (isDebugDump) require('./diagnostics').attach(win);
   if (isDrive) require('../../test/driver').attach(win);
+  if (process.argv.includes('--drive-provider')) {
+    require('../../test/provider-driver')
+      .run(win, process.argv[process.argv.indexOf('--drive-provider') + 1] || 'provider-result.json')
+      .then((passed) => {
+        console.log(passed ? 'PROVIDER_CHECK pass' : 'PROVIDER_CHECK fail');
+        app.exit(passed ? 0 : 1);
+      })
+      .catch((err) => {
+        console.error('provider driver failed:', err);
+        app.exit(1);
+      });
+  }
   if (process.argv.includes('--drive-profile')) {
     require('../../test/profile-driver')
       .run(win, process.argv[process.argv.indexOf('--drive-profile') + 1] || 'profile-result.json')
