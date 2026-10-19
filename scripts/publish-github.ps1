@@ -95,10 +95,14 @@ try {
 
     # ------------------------------------------------------------- push
     Step 'Pushing the source'
-    if (-not (git rev-parse --abbrev-ref HEAD)) { git checkout -q -b main }
-    git add -A .gitignore README.md package.json package-lock.json build src test scripts setup-app vendor
+    if ((git symbolic-ref --short HEAD) -eq 'HEAD') { git checkout -q -b main }
+
+    # Pick up anything changed since the last commit, ignoring build output
+    # and the unrelated projects that share this folder.
+    git add -A
     if (-not (git diff --cached --quiet)) {
         git commit -q -m 'Shine desktop app'
+        Write-Host 'Committed local changes.'
     }
 
     git remote remove origin *> $null
@@ -120,7 +124,6 @@ try {
 
     if ($assets.Count -eq 0) {
         Write-Host 'No built installers found. Run "npm run release" first; skipping the release.' -ForegroundColor Yellow
-        Push-Location $root
         Write-Host "`nDone: source pushed to https://github.com/$account/$RepoName" -ForegroundColor Green
         exit 0
     }
