@@ -72,6 +72,7 @@
     maximize: ['M5 5h14v14H5z'],
     restore: ['M8 8h11v11H8z', 'M5 16V5h11'],
     close: ['M6 6l12 12', 'M18 6L6 18'],
+    user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4.5 20a7.5 7.5 0 0 1 15 0'],
   };
 
   /* ======================================================================
@@ -317,9 +318,8 @@
           class: 'shine-tb-btn shine-tb-account',
           type: 'button',
           title: 'Sign in or open your account',
-          text: 'Sign in',
           onclick: function () { Account.toggle(); },
-        }),
+        }, [svg(GLYPH.user)]),
         el('div', { class: 'shine-tb-spacer' }),
         pcBtn,
         textButton('Log', 'What Shine has done on this computer', function () {
@@ -349,10 +349,34 @@
       pcBtn.title = enabled ? 'Shine can operate this computer. Click to turn it off.' : 'Let Shine operate this computer';
     }
 
-    function setAccountName(name) {
+    /* ------------------------------------------------------------------
+       The window bar shows the profile picture, or a plain user glyph
+       when there is not one. No name is ever displayed in the bar.
+       ------------------------------------------------------------------ */
+    var accountAvatar = null;
+
+    function setAccount(account) {
       if (!accountName) return;
-      accountName.textContent = name || 'Sign in';
-      accountName.title = name ? 'Open your account' : 'Sign in or create an account';
+      accountName.title = account
+        ? 'Your account'
+        : 'Sign in or create an account';
+
+      accountAvatar = null;
+
+      if (!account || !account.hasAvatar) {
+        accountName.innerHTML = '';
+        accountName.appendChild(svg(GLYPH.user));
+        accountName.classList.remove('has-picture');
+        return;
+      }
+
+      D.account.avatar(account.username, 64).then(function (result) {
+        if (!result || !result.ok) return;
+        accountName.innerHTML = '';
+        accountName.classList.add('has-picture');
+        accountAvatar = el('img', { src: result.dataUrl, alt: 'Your profile picture' });
+        accountName.appendChild(accountAvatar);
+      });
     }
 
     function refreshWindowState(state) {
@@ -365,7 +389,7 @@
       }
     }
 
-    return { build: build, setPcState: setPcState, setAccountName: setAccountName, refreshWindowState: refreshWindowState };
+    return { build: build, setPcState: setPcState, setAccount: setAccount, refreshWindowState: refreshWindowState };
   })();
 
   /* ======================================================================
@@ -579,6 +603,7 @@
             if (result.cancelled) return;
             if (!result.ok) return ToastHost.show('Could not use that image', result.error, 7000);
             current = result.account;
+            refreshTitle();
             paint();
             ToastHost.show('Profile picture updated', '', 2600);
           },
@@ -591,6 +616,7 @@
             var result = await D.account.clearAvatar(current.username);
             if (!result.ok) return ToastHost.show('Could not remove that', result.error, 6000);
             current = result.account;
+            refreshTitle();
             paint();
           },
         }),
@@ -652,9 +678,11 @@
             });
             if (!result.ok) return message.appendChild(error(result.error));
             current = result.account;
+            nameField.input.value = current.displayName || '';
             newUsername.input.value = '';
             usernamePassword.input.value = '';
             refreshTitle();
+            paint();
             message.appendChild(el('div', { class: 'shine-hint', text: 'Username changed to ' + current.username + '.' }));
           },
         })
@@ -711,7 +739,7 @@
     }
 
     function refreshTitle() {
-      Titlebar.setAccountName(current ? current.displayName || current.username : null);
+      Titlebar.setAccount(current);
       installAskWrapper();
     }
 

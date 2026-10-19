@@ -163,5 +163,14 @@ body {
 .btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:disabled { opacity: 0.4; cursor: default; }
 
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #08080a; font-weight: 500; }
-.btn.ghost { background: transparent; }
+/* The primary button must not change when the pointer is over it - the plain
+   :hover rule above is more specific and would otherwise wash it out. */
+.btn.primary,
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08080a;
+  font-weight: 500;
+}
+
+.btn.ghost:hover:not(:disabled) { background: var(--surface-2); }

@@ -313,6 +313,27 @@ app.whenReady().then(() => {
     send(win, 'shine:window-state', windowManager.windowState());
   });
 
+  // Development aid: capture the window itself and quit.
+  // Use: electron . --shot out.png
+  const shotIndex = process.argv.indexOf('--shot');
+  if (shotIndex !== -1) {
+    const out = process.argv[shotIndex + 1] || 'shine-shot.png';
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(async () => {
+        // Occluded windows capture as blank, so lift it above everything.
+        win.setAlwaysOnTop(true);
+        win.show();
+        win.focus();
+        await new Promise((r) => setTimeout(r, 900));
+        const image = await win.webContents.capturePage();
+        require('node:fs').writeFileSync(out, image.toPNG());
+        console.log(`wrote ${out}`);
+        win.setAlwaysOnTop(false);
+        app.quit();
+      }, 3500);
+    });
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) windowManager.createWindow();
     else windowManager.controls.show();

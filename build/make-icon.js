@@ -18,6 +18,7 @@ const SIZES = [16, 24, 32, 48, 64, 128, 256];
 const FONT_FAMILY = process.env.SHINE_ICON_FONT || 'Segoe UI';
 const TEXT = process.env.SHINE_ICON_TEXT || 'Shine';
 const COLOUR = process.env.SHINE_ICON_COLOUR || 'White';
+const BACKGROUND = process.env.SHINE_ICON_BACKGROUND || 'Black';
 
 /* ---------------------------- PNG ---------------------------- */
 
@@ -147,7 +148,7 @@ $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
 $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
 $g.PixelOffsetMode   = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
 $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
-$g.Clear([System.Drawing.Color]::Transparent)
+$g.Clear([System.Drawing.Color]::${BACKGROUND})
 
 $family  = ${psQuote(FONT_FAMILY)}
 $colour  = [System.Drawing.Color]::${COLOUR}
@@ -197,4 +198,4 @@ fs.writeFileSync(path.join(outDir, 'icon.png'), pngs[pngs.length - 1].data);
 fs.writeFileSync(path.join(outDir, 'icon.ico'), buildIco(pngs));
 for (const size of SIZES) fs.unlinkSync(path.join(outDir, `icon-${size}.png`));
 
-console.log(`Wrote icon.png and icon.ico ("${TEXT}", ${SIZES.join(', ')}px)`);
+console.log(`Wrote icon.png and icon.ico ("${TEXT}" on ${BACKGROUND}, ${SIZES.join(', ')}px)`);

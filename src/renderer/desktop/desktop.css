@@ -109,15 +109,46 @@ body.shine-light .shine-titlebar { background: rgba(255, 255, 255, 0.92); }
 
 body.shine-light .shine-tb-btn[aria-pressed='true'] { color: #fff; }
 
+/* The account button is a small circle holding the profile picture, or a
+   plain user glyph when there is no picture. No name is shown. */
 .shine-tb-account {
   -webkit-app-region: no-drag;
-  max-width: 190px;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0;
+  margin-left: 2px;
+  border-radius: 50%;
   overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--shine-faint);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .shine-tb-account:hover { color: var(--shine-ink); background: var(--shine-surface-2); }
+
+.shine-tb-account.has-picture { color: var(--shine-ink); }
+.shine-tb-account.has-picture:hover { background: var(--shine-surface-2); }
+
+.shine-tb-account svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.shine-tb-account img {
+  width: 24px;
+  height: 24px;
+  display: block;
+  object-fit: cover;
+  pointer-events: none;
+}
 
 .shine-tb-sep {
   width: 1px;
@@ -310,17 +341,29 @@ body.shine-light .shine-modal { background: #fff; }
 .shine-btn:active:not(:disabled) { transform: scale(0.97); }
 .shine-btn:disabled { opacity: 0.4; cursor: default; }
 
-.shine-btn.primary {
+/* The primary button must not change when the pointer is over it - the plain
+   :hover rule above is more specific and would otherwise wash it out. */
+.shine-btn.primary,
+.shine-btn.primary:hover:not(:disabled) {
   background: var(--shine-accent);
   border-color: var(--shine-accent);
   color: #08080a;
   font-weight: 500;
 }
 
-body.shine-light .shine-btn.primary { color: #fff; }
+.shine-btn.danger,
+.shine-btn.danger:hover:not(:disabled) {
+  background: var(--shine-ink);
+  border-color: transparent;
+  color: #08080a;
+  font-weight: 500;
+}
 
-.shine-btn.danger { background: var(--shine-ink); border-color: transparent; color: #08080a; font-weight: 500; }
-body.shine-light .shine-btn.danger { color: #fff; }
+body.shine-light .shine-btn.primary:hover:not(:disabled) { color: #fff; }
+body.shine-light .shine-btn.danger:hover:not(:disabled) { color: #fff; }
+
+.shine-btn.ghost { background: transparent; }
+.shine-btn.ghost:hover:not(:disabled) { background: var(--shine-surface-2); }
 
 /* --------------------------------------------------------------------------
    Activity log

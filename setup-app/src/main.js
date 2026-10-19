@@ -23,14 +23,16 @@ function createWindow() {
     },
   });
 
-  win.loadFile(path.join(__dirname, 'index.html'));
+  const pageIndex = process.argv.indexOf('--page');
+  win.loadFile(path.join(__dirname, 'index.html'), {
+    search: pageIndex !== -1 ? `page=${process.argv[pageIndex + 1]}` : '',
+  });
   return win;
 }
 
 function registerIpc() {
   ipcMain.handle('setup:state', async () => ({
     mode: isUninstall ? 'uninstall' : 'install',
-    version: app.getVersion(),
     defaultDir: installer.defaultInstallDir(),
     installed: await installer.isInstalled(installer.defaultInstallDir()),
     previous: await installer.previousInstall(),
@@ -76,6 +78,27 @@ function registerIpc() {
 app.whenReady().then(() => {
   app.setAppUserModelId('com.shine.desktop.setup');
   registerIpc();
-  createWindow();
+  const win = createWindow();
   app.on('window-all-closed', () => app.quit());
+
+  // Development aid: capture this window itself and quit, which avoids
+  // depending on window focus. Use: electron setup-app --shot out.png
+  const shotIndex = process.argv.indexOf('--shot');
+  if (shotIndex !== -1) {
+    const out = process.argv[shotIndex + 1] || 'setup-shot.png';
+    win.webContents.once('did-finish-load', () => {
+      setTimeout(async () => {
+        // Occluded windows capture as blank, so lift it above everything.
+        win.setAlwaysOnTop(true);
+        win.show();
+        win.focus();
+        await new Promise((r) => setTimeout(r, 900));
+        const image = await win.webContents.capturePage();
+        require('node:fs').writeFileSync(out, image.toPNG());
+        console.log(`wrote ${out}`);
+        win.setAlwaysOnTop(false);
+        app.quit();
+      }, 1200);
+    });
+  }
 });

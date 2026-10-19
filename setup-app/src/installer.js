@@ -177,22 +177,21 @@ async function setRunAtStartup(target, enabled) {
   await createShortcut(target, link, APP_NAME);
 }
 
-async function registerUninstall(dir, version) {
+async function registerUninstall(dir) {
   const uninstaller = path.join(dir, `Uninstall ${APP_NAME}.exe`);
   const result = await runPowerShell(`
     $ErrorActionPreference = 'Stop'
     $key = ${psQuote(registryKey)}
     New-Item -Path $key -Force | Out-Null
     Set-ItemProperty -Path $key -Name 'DisplayName' -Value ${psQuote(APP_NAME)} -Force
-    Set-ItemProperty -Path $key -Name 'DisplayVersion' -Value ${psQuote(version)}
-    Set-ItemProperty -Path $key -Name 'Publisher' -Value ${psQuote(APP_NAME)}
-    Set-ItemProperty -Path $key -Name 'InstallLocation' -Value ${psQuote(dir)}
-    Set-ItemProperty -Path $key -Name 'DisplayIcon' -Value ${psQuote(path.join(dir, 'Shine.exe'))}
-    Set-ItemProperty -Path $key -Name 'UninstallString' -Value ${psQuote(`"${uninstaller}" --uninstall`)}
-    Set-ItemProperty -Path $key -Name 'QuietUninstallString' -Value ${psQuote(`"${uninstaller}" --uninstall`)}
-    Set-ItemProperty -Path $key -Name 'NoModify' -Value 1
-    Set-ItemProperty -Path $key -Name 'NoRepair' -Value 1
-    Set-ItemProperty -Path $key -Name 'EstimatedSize' -Value 250000
+    Set-ItemProperty -Path $key -Name 'Publisher' -Value ${psQuote(APP_NAME)} -Force
+    Set-ItemProperty -Path $key -Name 'InstallLocation' -Value ${psQuote(dir)} -Force
+    Set-ItemProperty -Path $key -Name 'DisplayIcon' -Value ${psQuote(path.join(dir, 'Shine.exe'))} -Force
+    Set-ItemProperty -Path $key -Name 'UninstallString' -Value ${psQuote(`"${uninstaller}" --uninstall`)} -Force
+    Set-ItemProperty -Path $key -Name 'QuietUninstallString' -Value ${psQuote(`"${uninstaller}" --uninstall`)} -Force
+    Set-ItemProperty -Path $key -Name 'NoModify' -Value 1 -Force
+    Set-ItemProperty -Path $key -Name 'NoRepair' -Value 1 -Force
+    Set-ItemProperty -Path $key -Name 'EstimatedSize' -Value 250000 -Force
   `);
 
   if (!result.ok) throw new Error(`Could not register Shine for uninstall: ${result.stderr || 'unknown error'}`);
@@ -219,7 +218,7 @@ async function install(options, onStep) {
 
   onStep?.('Finishing up', 0.8);
   await writeUninstaller(dir);
-  await registerUninstall(dir, options.version || '1.0.0');
+  await registerUninstall(dir);
 
   onStep?.('Creating shortcuts', 0.9);
   if (options.desktopShortcut) {

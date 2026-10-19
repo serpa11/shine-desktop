@@ -56,15 +56,23 @@ async function init() {
     return;
   }
 
-  $('introTitle').textContent = `Shine Setup ${state.version}`;
+  $('introTitle').textContent = 'Shine Setup';
   $('introText').textContent = state.previous
-    ? `Shine ${state.version} will be installed into ${state.previous}, replacing the existing copy.`
-    : `Shine ${state.version} will be installed on this PC.`;
+    ? `Shine will be installed into ${state.previous}, replacing the existing copy.`
+    : 'Shine will be installed on this PC.';
 
   $('installDir').value = state.previous || state.defaultDir;
   await refreshDiskHint();
   show('intro');
   setFooter({});
+
+  // Development aid: open straight onto a page, e.g. ?page=options
+  const startPage = new URLSearchParams(location.search).get('page');
+  if (startPage === 'options' || startPage === 'done') {
+    stage = 'options';
+    show('options');
+    setFooter({ next: 'Install' });
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -137,7 +145,6 @@ async function runInstall() {
       desktopShortcut: $('optDesktop').checked,
       startMenuShortcut: $('optStartMenu').checked,
       runAtStartup: $('optStartup').checked,
-      version: state.version,
     });
 
     $('progressFill').style.width = '100%';
