@@ -1,6 +1,6 @@
-# Shine Desktop
+# Shine
 
-It is Shine but for Windows!
+Shine for Windows.
 
 It loads the Shine site inside a real window and adds only the things a
 browser tab cannot do well it can accounts tho lol:

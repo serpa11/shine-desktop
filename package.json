@@ -2,10 +2,10 @@
   "name": "shine-desktop",
   "productName": "Shine",
   "version": "1.0.0",
-  "description": "Shine AI desktop app with native window controls, microphone dictation and permissioned PC control.",
+  "description": "Shine for Windows.",
   "main": "src/main/main.js",
   "author": {
-    "name": "Shine Desktop"
+    "name": "Shine"
   },
   "license": "MIT",
   "private": true,
@@ -35,7 +35,7 @@
   "build": {
     "appId": "com.shine.desktop",
     "productName": "Shine",
-    "copyright": "Copyright © 2026 Shine Desktop",
+    "copyright": "Copyright © 2026 Shine",
     "asar": true,
     "asarUnpack": [
       "vendor/**"

@@ -80,7 +80,7 @@ async function main(appDirOverride) {
   execFileSync(rcedit, [
     exePath,
     '--set-icon', iconPath,
-    '--set-version-string', 'FileDescription', 'Shine AI desktop app',
+    '--set-version-string', 'FileDescription', 'Shine',
     '--set-version-string', 'ProductName', 'Shine',
     '--set-version-string', 'CompanyName', 'Shine',
     '--set-file-version', `${version}.0`,

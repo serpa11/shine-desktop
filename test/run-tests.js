@@ -154,6 +154,117 @@ section('Executor: read-only tools');
   const critical = await execute('kill_process', { pid: 4 });
   check('refuses critical Windows processes', !critical.ok && /critical/i.test(critical.error || ''), critical.error);
 
+section('Executor: applications and appearance');
+
+{
+  const found = await execute('find_applications', { name: 'notepad' });
+  check('find_applications returns matches', found.ok && Array.isArray(found.output?.matches), found.error);
+  check('find_applications found a real exe path', (found.output?.matches || []).every((m) => /notepad\.exe$/i.test(m)));
+  check('find_applications searched the usual places', /Start Menu/.test(found.output?.searched || ''));
+
+  const none = await execute('find_applications', { name: 'zzzzdefinitelynotanapp' });
+  check('find_applications reports nothing found', none.ok && none.output.count === 0);
+
+  const badTheme = await execute('set_appearance', { theme: 'purple' });
+  check('set_appearance rejects a nonsense theme', !badTheme.ok && /light.*dark.*system/i.test(badTheme.error || ''), badTheme.error);
+
+  const noArgs = await execute('set_appearance', {});
+  check('set_appearance requires at least one option', !noArgs.ok, noArgs.error);
+
+  // Re-applying whatever the user already has must not change their desktop.
+  const current = await execute('run_command', {
+    command: "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name AppsUseLightTheme -ErrorAction SilentlyContinue).AppsUseLightTheme",
+  });
+  const value = String(current.output?.stdout ?? '').trim();
+  if (value === '0' || value === '1') {
+    const mode = value === '1' ? 'light' : 'dark';
+    const applied = await execute('set_appearance', { theme: mode });
+    check(`set_appearance applies ${mode} mode`, applied.ok, applied.error);
+    const after = await execute('run_command', {
+      command: "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name AppsUseLightTheme -ErrorAction SilentlyContinue).AppsUseLightTheme",
+    });
+    check('set_appearance left the current theme alone', String(after.output?.stdout ?? '').trim() === value);
+  } else {
+    check('set_appearance applies the current theme', true, 'no theme value set on this PC, skipped');
+  }
+
+  const missing = await execute('launch_app', { name: 'C:\\definitely\\not\\here.exe' });
+  check('launch_app fails clearly for a missing path', !missing.ok && /could not find/i.test(missing.error || ''), missing.error);
+
+  section('Executor: Windows settings, mouse, commands and documents');
+
+  const settings = await execute('list_windows_settings', {});
+  check('list_windows_settings succeeds', settings.ok, settings.error);
+  check('every setting has a group', (settings.output?.settings || []).every((s) => s.group));
+  check('every setting has a description', (settings.output?.settings || []).every((s) => (s.description || '').length > 10));
+  check('appearance, accessibility and feature flags are all covered', ['appearance', 'accessibility', 'features'].every((g) => (settings.output?.settings || []).some((s) => s.group === g)));
+  check('dark_mode is offered', (settings.output?.settings || []).some((s) => s.setting === 'dark_mode'));
+  check('accessibility settings are offered', ['narrator', 'high_contrast', 'magnifier', 'sticky_keys'].every((n) => (settings.output?.settings || []).some((s) => s.setting === n)));
+  check('feature flags are offered', ['telemetry', 'ads', 'dev_mode'].every((n) => (settings.output?.settings || []).some((s) => s.setting === n)));
+
+  // Only names in the table may be touched: a free-form registry path would
+  // otherwise let the model write anywhere on the machine.
+  const unknownSetting = await execute('change_windows_setting', { setting: 'delete_everything', value: true });
+  check('an unknown setting is refused', !unknownSetting.ok && /no Windows setting called/i.test(unknownSetting.error || ''), unknownSetting.error);
+
+  const injection = await execute('change_windows_setting', { setting: 'HKLM\\SYSTEM\\CurrentControlSet\\Services', value: true });
+  check('a registry path is not accepted as a setting name', !injection.ok, injection.error);
+
+  // Re-applying the mode already in use must not change the desktop.
+  const themeRead = await execute('run_command', {
+    command: "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name AppsUseLightTheme -ErrorAction SilentlyContinue).AppsUseLightTheme",
+  });
+  const themeValue = String(themeRead.output?.stdout ?? '').trim();
+  if (themeValue === '0' || themeValue === '1') {
+    const applied = await execute('change_windows_setting', { setting: 'dark_mode', value: themeValue === '0' });
+    check('change_windows_setting applies dark_mode', applied.ok, applied.error);
+    const after = await execute('run_command', {
+      command: "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name AppsUseLightTheme -ErrorAction SilentlyContinue).AppsUseLightTheme",
+    });
+    check('the theme on this PC was left as it was', String(after.output?.stdout ?? '').trim() === themeValue);
+  } else {
+    check('change_windows_setting applies dark_mode', true, 'no theme value set on this PC, skipped');
+  }
+
+  const noCoords = await execute('move_cursor', {});
+  check('move_cursor refuses without coordinates', !noCoords.ok && /numeric x and y/i.test(noCoords.error || ''), noCoords.error);
+
+  const badButton = await execute('click', { button: 'thumb' });
+  check('click refuses an unknown button', !badButton.ok && /left, right or middle/i.test(badButton.error || ''), badButton.error);
+
+  const missingScript = await execute('run_script_file', { path: path.join(os.tmpdir(), 'nope.ps1') });
+  check('run_script_file refuses a missing script', !missingScript.ok, missingScript.error);
+
+  const doc = path.join(os.homedir(), 'shine-doc-test.txt');
+  fs.writeFileSync(doc, 'hello world\n');
+  const edited = await execute('edit_document', { path: doc, mode: 'find_replace', find: 'world', replace: 'Shine' });
+  check('edit_document replaces text', edited.ok && fs.readFileSync(doc, 'utf8') === 'hello Shine\n', edited.error);
+  const noMatch = await execute('edit_document', { path: doc, mode: 'find_replace', find: 'absent', replace: 'x' });
+  check('edit_document refuses when the text is not found', !noMatch.ok, noMatch.error);
+  check('edit_document left the file alone on a failed match', fs.readFileSync(doc, 'utf8') === 'hello Shine\n');
+  fs.rmSync(doc, { force: true });
+
+  section('Tools: new capabilities are registered');
+  const { TOOL_MAP } = require('../src/main/agent/tools');
+  const expected = {
+    find_applications: 'read',
+    launch_app: 'exec',
+    set_appearance: 'system',
+    change_windows_setting: 'system',
+    list_windows_settings: 'read',
+    move_cursor: 'exec',
+    click: 'exec',
+    type_command: 'exec',
+    run_script_file: 'exec',
+    edit_document: 'write',
+  };
+  for (const [name, risk] of Object.entries(expected)) {
+    check(`${name} is registered as ${risk}`, TOOL_MAP.get(name)?.risk === risk, TOOL_MAP.get(name)?.risk);
+  }
+  check('every new tool has a description', Object.keys(expected).every((n) => (TOOL_MAP.get(n)?.description || '').length > 30));
+  check('every tool has an implementation', Object.keys(expected).every((n) => typeof require('../src/main/agent/executor').impl[n] === 'function'));
+}
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) {
     console.log(`failures:\n  - ${failures.join('\n  - ')}`);

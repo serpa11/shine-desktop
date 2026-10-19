@@ -18,6 +18,28 @@ const runState = {
   currentPlan: '',
 };
 
+// A provider that never answers used to leave the whole request hanging: the
+// renderer's fetch wrapper waits on this promise, so the site's ask() never
+// resolved and it sat on "processing" forever with no way out. Every provider
+// call is now bounded, and the run as a whole has its own ceiling.
+const PROVIDER_TIMEOUT_MS = 90000;
+const RUN_TIMEOUT_MS = 6 * 60 * 1000;
+
+/** A signal that aborts on timeout as well as on the caller's own signal. */
+function withTimeout(external, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    runState.lastError = `The AI provider did not answer within ${Math.round(ms / 1000)} seconds.`;
+    controller.abort();
+  }, ms);
+
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return { signal: controller.signal, done: () => clearTimeout(timer) };
+}
+
 function isEnabled() {
   return store.getValue('pcControl', 'enabled', false) === true;
 }
@@ -60,8 +82,26 @@ function buildSystemPrompt(extraContext = '') {
 - The user's desktop is ${path.join(os.homedir(), 'Desktop')}, downloads ${path.join(os.homedir(), 'Downloads')}, documents ${path.join(os.homedir(), 'Documents')}.
 - Current time: ${new Date().toString()}
 
+# Appearance and apps
+- If the user asks to switch Windows between dark mode and light mode, call set_appearance with theme "dark", "light" or "system". The same tool turns transparency and animations on and off. It applies immediately.
+- If the user names an app to open ("open spotify", "launch notepad", "run chrome"), call launch_app with the name they used. It searches the Start Menu, the App Paths registry and Program Files, so it finds programs that are not on PATH.
+- If launch_app cannot find something, call find_applications to show the user what is actually installed, and offer those names rather than guessing.
+
+# Changing Windows settings
+- The user can ask for any Windows setting by name: appearance, accessibility, or experimental feature flags. Call list_windows_settings to find the exact setting name and see its current value, then change_windows_setting with that name and true or false.
+- Common examples: "turn on dark mode", "switch to light mode", "turn on the narrator", "turn off telemetry", "turn off suggested apps", "make the taskbar centred".
+- Never guess a setting name. Only names in the list work.
+
+# Driving the mouse
+- Use take_screenshot to see the screen, then move_cursor and click to interact. This is the only way to drive apps with no keyboard shortcut - a VMware wizard, for example.
+- Click carefully: verify with another screenshot after clicking, and if something unexpected happened, tell the user rather than clicking again blindly.
+
+# Typing commands for the user
+- If the user wants to see a command rather than have Shine run it silently, use type_command. It opens a terminal and types the command out.
+- To run a script file they already have, use run_script_file.
+
 # How to work
-1. Read-only tools (system_info, list_directory, read_file, list_processes, list_windows, take_screenshot, read_clipboard, get_volume, search_files) run without a prompt.
+1. Read-only tools (system_info, list_directory, read_file, list_processes, list_windows, take_screenshot, read_clipboard, get_volume, search_files, find_applications, list_windows_settings) run without a prompt.
 2. Anything that writes files, runs a command, or drives the UI shows the user an approval dialog first. The user may approve or deny. A denial is final - do not try to work around it, and do not re-ask for the same action. Tell the user what you would have done and let them decide.
 3. Work in small steps. After each tool result, check whether you actually achieved the goal before moving on.
 4. Never claim you did something you did not do. Report the real tool output.
@@ -137,6 +177,12 @@ async function run(win, request, { signal } = {}) {
   runState.currentRequestId = request.requestId || `run-${Date.now()}`;
   runState.currentPlan = '';
 
+  // A last-resort ceiling. Individual provider calls are already bounded, but
+  // a chain of slow tool calls could otherwise keep the renderer waiting on a
+  // promise that never settles.
+  const wholeRun = withTimeout(signal, RUN_TIMEOUT_MS);
+  const budget = wholeRun.signal;
+
   const maxSteps = Math.max(1, Math.min(20, Number(store.getValue('pcControl', 'maxSteps', 8)) || 8));
   const dangerMode = store.getValue('pcControl', 'dangerMode', false) === true;
 
@@ -154,19 +200,32 @@ async function run(win, request, { signal } = {}) {
     for (let step = 0; step < maxSteps; step += 1) {
       if (runState.cancelled || signal?.aborted) throw new Error('Stopped by the user.');
 
-      const parsed = await callProvider(
-        {
-          provider,
-          model: request.model,
-          apiKey: request.apiKey,
-          baseUrl: request.baseUrl,
-          authStyle: request.authStyle,
-          systemPrompt: buildSystemPrompt(systemContext),
-          messages,
-          images: [...pendingImages, ...profileImages],
-        },
-        { signal }
-      );
+      const bounded = withTimeout(budget, PROVIDER_TIMEOUT_MS);
+      let parsed;
+      try {
+        parsed = await callProvider(
+          {
+            provider,
+            model: request.model,
+            apiKey: request.apiKey,
+            baseUrl: request.baseUrl,
+            authStyle: request.authStyle,
+            systemPrompt: buildSystemPrompt(systemContext),
+            messages,
+            images: [...pendingImages, ...profileImages],
+          },
+          { signal: bounded.signal }
+        );
+      } catch (err) {
+        if (err?.name === 'AbortError' && !runState.cancelled) {
+          throw new Error(
+            `The AI provider did not answer within ${Math.round(PROVIDER_TIMEOUT_MS / 1000)} seconds, so I stopped waiting. Check the base URL, model name and that the provider is reachable.`
+          );
+        }
+        throw err;
+      } finally {
+        bounded.done();
+      }
       pendingImages = [];
 
       if (!useTools) {
@@ -226,6 +285,7 @@ async function run(win, request, { signal } = {}) {
     }
     throw err;
   } finally {
+    wholeRun.done();
     runState.active = false;
     runState.currentPlan = '';
   }

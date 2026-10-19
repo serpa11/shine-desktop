@@ -10,6 +10,143 @@ const { spawn, execFile } = require('node:child_process');
 const { TOOL_MAP, normaliseArgs } = require('./tools');
 
 /* ------------------------------------------------------------------ */
+/* Windows settings Shine knows how to change                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The settings change_windows_setting is allowed to touch.
+ *
+ * This is deliberately a fixed list rather than free-form registry writes.
+ * "Change any Windows setting" built on a registry string would let the model
+ * corrupt the machine; built on a table, it can only ever reach settings
+ * someone chose to expose. Keys are HKCU so nothing needs administrator.
+ */
+const ACCESSIBILITY_KEY = 'HKCU:\\Control Panel\\Accessibility';
+const PERSONALIZE = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize';
+const DESKTOP = 'HKCU:\\Control Panel\\Desktop';
+const EXPLORER = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced';
+const FEATURES = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\FeatureConfig';
+
+const WINDOWS_SETTINGS = {
+  // Appearance
+  dark_mode: { group: 'appearance', kind: 'theme', key: PERSONALIZE, name: 'AppsUseLightTheme', description: 'Windows and apps in dark mode. Off means light mode.' },
+  transparency: { group: 'appearance', kind: 'spi', spi: '0x0013', spiFlags: 0, description: 'Transparency effects behind windows and in menus.' },
+  animations: { group: 'appearance', kind: 'spi', spi: '0x0048', description: 'Window minimise and maximise animations.' },
+  taskbar_alignment: { group: 'appearance', kind: 'reg', key: EXPLORER + '\\TaskbarSi', name: 'TaskbarAl', type: 'dword', description: 'Where taskbar icons sit: 0 left, 1 centre, 2 right.' },
+  show_desktop_icons: { group: 'appearance', kind: 'reg', key: EXPLORER + '\\Desktop', name: 'HideIcons', type: 'dword', description: 'Hide all desktop icons when off.' },
+  transparency_taskbar: { group: 'appearance', kind: 'reg', key: PERSONALIZE, name: 'EnableTransparency', type: 'dword', description: 'Transparent taskbar.' },
+  start_sound: { group: 'appearance', kind: 'reg', key: DESKTOP, name: 'MNS', type: 'dword', description: 'Play a sound when Windows starts.' },
+
+  // Accessibility
+  magnifier: { group: 'accessibility', kind: 'reg', key: ACCESSIBILITY_KEY, name: 'Magnifier', type: 'dword', description: 'The screen magnifier.' },
+  narrator: { group: 'accessibility', kind: 'reg', key: `HKCU:\\Control Panel\\Accessibility\\Narrator`, name: 'Narrator', type: 'dword', description: 'Screen reader that reads text aloud.' },
+  narrator_verbose: { group: 'accessibility', kind: 'reg', key: `HKCU:\\Control Panel\\Accessibility\\Narrator`, name: 'Verbose', type: 'dword', description: 'Narrator verbosity.' },
+  high_contrast: { group: 'accessibility', kind: 'reg', key: ACCESSIBILITY_KEY, name: 'HighContrast', type: 'dword', description: 'High contrast colour scheme.' },
+  sticky_keys: { group: 'accessibility', kind: 'reg', key: ACCESSIBILITY_KEY + '\\StickyKeys', name: 'Flags', type: 'dword', description: 'Sticky keys, so modifier keys latch.' },
+  filter_keys: { group: 'accessibility', kind: 'reg', key: ACCESSIBILITY_KEY + '\\Keyboard Response', name: 'Flags', type: 'dword', description: 'Filter keys, ignores brief keystrokes.' },
+  toggle_keys: { group: 'accessibility', kind: 'reg', key: ACCESSIBILITY_KEY + '\\ToggleKeys', name: 'Flags', type: 'dword', description: 'Toggle keys, Num Lock and Caps Lock.' },
+  mouse_keys: { group: 'accessibility', kind: 'reg', key: ACCESSIBILITY_KEY + '\\MouseKeys', name: 'Flags', type: 'dword', description: 'Move the pointer with the number pad.' },
+  keyboard_repeat_delay: { group: 'accessibility', kind: 'reg', key: DESKTOP, name: 'KeyboardDelay', type: 'dword', description: 'Delay before a held key repeats, in milliseconds.' },
+  cursor_trails: { group: 'accessibility', kind: 'reg', key: ACCESSIBILITY_KEY + '\\CursorTrails', name: 'Flags', type: 'dword', description: 'Leave a trail behind the pointer.' },
+  cursor_size: { group: 'accessibility', kind: 'reg', key: DESKTOP, name: 'CursorSize', type: 'dword', description: 'Pointer size, 1 small to 15 huge.' },
+  scrollbar_width: { group: 'accessibility', kind: 'reg', key: DESKTOP, name: 'ScrollbarWidth', type: 'dword', description: 'Scrollbar width in pixels.' },
+  animation_disabled_systemwide: { group: 'accessibility', kind: 'reg', key: `HKCU:\\Control Panel\\Desktop\\WindowMetrics`, name: 'MinAnimate', type: 'dword', description: 'Disable all window animations system wide.' },
+  smooth_scrolling: { group: 'accessibility', kind: 'reg', key: DESKTOP, name: 'UserPreferencesMask', type: 'dword', description: 'Smooth scrolling bitmask.' },
+
+  // Experimental / insider feature flags
+  dev_mode: { group: 'features', kind: 'reg', key: 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock', name: 'AllowDevelopmentWithoutDevLicense', type: 'dword', description: 'Developer Mode. Needs administrator.' },
+  feature_explorer: { group: 'features', kind: 'reg', key: FEATURES, name: 'ShowFeatureUpdatesUI', type: 'dword', description: 'Show the Windows Insider feature flight control.' },
+  telemetry: { group: 'features', kind: 'reg', key: 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection', name: 'AllowTelemetry', type: 'dword', description: 'Diagnostics and telemetry level, 0 off to 3 full.' },
+  ads: { group: 'features', kind: 'reg', key: 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager', name: 'SubscribedContent-338388Enabled', type: 'dword', description: 'Suggested apps and tips in Start.' },
+  tips: { group: 'features', kind: 'reg', key: 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager', name: 'SystemPaneSuggestionsEnabled', type: 'dword', description: 'Windows tips and suggestions.' },
+  suggestions: { group: 'features', kind: 'reg', key: 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager', name: 'SilentInstalledAppsEnabled', type: 'dword', description: 'Silently installed suggested apps.' },
+  web_search: { group: 'features', kind: 'reg', key: DESKTOP, name: 'DisableSearchBoxSuggestions', type: 'dword', description: 'Stop Bing web results appearing in the Start search box.' },
+  file_extensions_hidden: { group: 'features', kind: 'reg', key: EXPLORER + '\\FileExts', name: 'HideFileExt', type: 'dword', description: 'Hide known file extensions.' },
+  compact_start: { group: 'features', kind: 'reg', key: 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced', name: 'Start_TrackDocs', type: 'dword', description: 'Show recently opened items in Start and Explorer.' },
+};
+
+/* ------------------------------------------------------------------ */
+/* Finding installed applications                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Builds the PowerShell that hunts for installed applications.
+ *
+ * Start-Process only resolves whatever is on PATH, which is almost nothing
+ * that is actually installed, so "open spotify" failed for most apps. Windows
+ * keeps the real answer in three places, and this checks all of them:
+ *
+ *   1. the App Paths registry key, which installers write for every app
+ *   2. both Start Menu folders, which hold shortcuts for installed programs
+ *   3. Program Files and System32, for anything else portable
+ *
+ * The user can also hand over a path directly, which is checked first so
+ * "open D:\\Games\\thing.exe" always does exactly what was asked.
+ */
+function appSearchScript(query, limit, doLaunch, argPart = '') {
+  const direct = path.extname(query).toLowerCase() === '.exe' ? `, ${psQuote(query)}` : '';
+
+  return `
+$ErrorActionPreference = 'SilentlyContinue'
+$query = ${psQuote(query)}
+$limit = ${limit}
+$found = New-Object System.Collections.Generic.List[string]
+
+function Add-Match($p) {
+  if ($p -and (Test-Path -LiteralPath $p) -and -not $found.Contains($p)) { $found.Add($p) }
+}
+
+# A full path was given - use it as-is.
+if ($query -match '^[A-Za-z]:\\\\') { Add-Match $query }
+
+# 1. App Paths registry: written by installers, the most reliable source.
+foreach ($root in @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths',
+                    'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths',
+                    'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths')) {
+  foreach ($k in @(Get-ChildItem -Path $root -ErrorAction SilentlyContinue |
+                   Where-Object { $_.PSChildName -like "*$query*" } | Select-Object -First $limit)) {
+    Add-Match (Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue).'(default)'
+  }
+}
+
+# 2. Start Menu shortcuts. Resolve the target so the result is a real exe.
+$shell = New-Object -ComObject WScript.Shell
+foreach ($menu in @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs",
+                    "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs")) {
+  if (-not (Test-Path $menu)) { continue }
+  Get-ChildItem -Path $menu -Filter *.lnk -Recurse -ErrorAction SilentlyContinue |
+    Where-Object { $_.BaseName -like "*$query*" } | Select-Object -First $limit |
+    ForEach-Object { Add-Match ($shell.CreateShortcut($_.FullName).TargetPath) }
+}
+
+# 3. Program Files and the system folder, shallow.
+$dirs = @($env:ProgramFiles, "\${env:ProgramFiles(x86)}", "$env:SystemRoot\\System32")
+foreach ($d in $dirs) {
+  if (-not $d -or -not (Test-Path $d)) { continue }
+  Get-ChildItem -Path $d -Filter "*$query*.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+    Select-Object -First $limit | ForEach-Object { Add-Match $_.FullName }
+}
+
+if ($found.Count -eq 0) { Write-Output 'NOT_FOUND'; exit 0 }
+Write-Output ('MATCHES:' + ($found -join '|'))
+
+${doLaunch
+    ? `Start-Process -FilePath $found[0] -ErrorAction Stop
+Write-Output ('LAUNCHED:' + $found[0])`
+    : `$found | Select-Object -First $limit | ForEach-Object { Write-Output ('MATCH:' + $_) }`}
+`;
+}
+
+function parseAppMatches(stdout) {
+  const line = /MATCHES:(.+)/.exec(String(stdout || ''));
+  const raw = line ? line[1].split('|') : [];
+  return raw
+    .concat([...String(stdout || '').matchAll(/^MATCH:(.+)$/gm)].map((m) => m[1]))
+    .map((s) => s.trim())
+    .filter((s, i, arr) => s && arr.indexOf(s) === i);
+}
+
+/* ------------------------------------------------------------------ */
 /* PowerShell bridge                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -129,8 +266,68 @@ public static class Win {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
   [DllImport("user32.dll")] public static extern IntPtr FindWindow(string c, string n);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, IntPtr e);
+  [DllImport("user32.dll")] public static extern short VkKeyScan(char c);
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  public const uint LEFTDOWN = 0x0002, LEFTUP = 0x0004;
+  public const uint RIGHTDOWN = 0x0008, RIGHTUP = 0x0010;
+  public const uint MIDDLEDOWN = 0x0020, MIDDLEUP = 0x0040;
+  public const uint WHEEL = 0x0800, MOVE = 0x0001, ABSOLUTE = 0x8000;
 }
 `;
+
+/** Reads the mouse pointer position, for confirming where a move landed. */
+const GET_CURSOR_PS = `
+$p = New-Object Win+POINT
+[void][Win]::GetCursorPos([ref]$p)
+Write-Output ("CURSOR:" + $p.X + "," + $p.Y)
+`;
+
+/**
+ * Moves the pointer and optionally clicks.
+ *
+ * This is what lets Shine drive an app it has no API for - the user asked for
+ * VMware specifically, where every step is a click somewhere on screen. There
+ * is no mouse control at all without this.
+ */
+function mouseScript({ x, y, button = 'left', clicks = 1, wheel, settle = 120 }) {
+  const btn = String(button || 'left').toLowerCase();
+  const down = { left: 'LEFTDOWN', right: 'RIGHTDOWN', middle: 'MIDDLEDOWN' }[btn];
+  const up = { left: 'LEFTUP', right: 'RIGHTUP', middle: 'MIDDLEUP' }[btn];
+  if (!down) throw new Error(`Unknown mouse button "${button}". Use left, right or middle.`);
+
+  const times = Math.max(1, Math.min(5, Number(clicks) || 1));
+  const steps = [];
+
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    steps.push(`[void][Win]::SetCursorPos(${Math.round(x)}, ${Math.round(y)})`);
+    steps.push(`Start-Sleep -Milliseconds ${Math.max(60, Number(settle) || 120)}`);
+  }
+
+  if (wheel !== undefined && wheel !== null && Number(wheel) !== 0) {
+    // One notch is 120, the value Windows sends for a wheel click.
+    const notches = Math.max(-10, Math.min(10, Number(wheel) || 0));
+    steps.push(`[Win]::mouse_event([Win]::WHEEL, 0, 0, ${notches * 120}, [IntPtr]::Zero)`);
+    steps.push('Start-Sleep -Milliseconds 150');
+  }
+
+  for (let i = 0; i < times; i += 1) {
+    steps.push(`[Win]::mouse_event([Win]::${down}, 0, 0, 0, [IntPtr]::Zero)`);
+    steps.push('Start-Sleep -Milliseconds 45');
+    steps.push(`[Win]::mouse_event([Win]::${up}, 0, 0, 0, [IntPtr]::Zero)`);
+    if (i < times - 1) steps.push('Start-Sleep -Milliseconds 70');
+  }
+
+  steps.push('Start-Sleep -Milliseconds 150');
+  steps.push(GET_CURSOR_PS.trim());
+
+  return `${USER32_CSHARP}
+Add-Type -AssemblyName System.Windows.Forms
+[void][Win]::SetProcessDPIAware()
+${steps.join('\n')}`;
+}
 
 /* ------------------------------------------------------------------ */
 /* Tool implementations                                               */
@@ -405,11 +602,154 @@ Write-Output ("CLOSED:" + $n)`;
     return { pid, process: name, killed: true };
   },
 
+  async move_cursor(args) {
+    const x = Number(args.x);
+    const y = Number(args.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error('move_cursor needs numeric x and y screen coordinates. Use list_windows or take_screenshot to find where to click.');
+    }
+    const r = await runPowerShell(mouseScript({ x, y }), { sta: true, timeoutMs: 20000 });
+    if (!r.ok) throw new Error(`Could not move the cursor: ${r.stderr}`);
+    return { x: Math.round(x), y: Math.round(y), position: /CURSOR:(\d+,\d+)/.exec(r.stdout)?.[1] || null };
+  },
+
+  async click(args) {
+    const r = await runPowerShell(
+      mouseScript({
+        x: args.x === undefined ? NaN : Number(args.x),
+        y: args.y === undefined ? NaN : Number(args.y),
+        button: args.button || 'left',
+        clicks: args.clicks ?? 1,
+        wheel: args.wheel,
+        settle: args.settle,
+      }),
+      { sta: true, timeoutMs: 20000 }
+    );
+    if (!r.ok) throw new Error(`Could not click: ${r.stderr}`);
+    return {
+      button: args.button || 'left',
+      clicks: args.clicks ?? 1,
+      at: Number.isFinite(Number(args.x)) ? { x: Math.round(Number(args.x)), y: Math.round(Number(args.y)) } : 'current position',
+      position: /CURSOR:(\d+,\d+)/.exec(r.stdout)?.[1] || null,
+    };
+  },
+
   async type_text(args) {
     const text = String(args.text ?? '');
     if (!text) throw new Error('type_text needs text.');
     await requireOk(await runPowerShell(`Start-Sleep -Milliseconds 250; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(${psQuote(text)}); Start-Sleep -Milliseconds 150`, { sta: true, timeoutMs: 20000 }), 'type_text');
     return { typed: text.length, note: 'Text was sent to the focused window.' };
+  },
+
+  /**
+   * Types a command out for the user to see, rather than running it quietly.
+   *
+   * This is what the user asked for: Shine should be able to write a cmd or
+   * PowerShell command into their terminal so they can read it, run it
+   * themselves, or let Shine go on to press Enter.
+   */
+  async type_command(args) {
+    const command = String(args.command || '').trim();
+    if (!command) throw new Error('type_command needs a command.');
+    const shell = String(args.shell || 'powershell').toLowerCase();
+    if (!['powershell', 'cmd', 'terminal'].includes(shell)) {
+      throw new Error(`shell must be "powershell", "cmd" or "terminal", not "${shell}".`);
+    }
+
+    // Open a terminal of the requested kind, unless one is already focused.
+    const launch =
+      shell === 'cmd'
+        ? `Start-Process cmd.exe -ArgumentList '/k' -WindowStyle Normal`
+        : `Start-Process powershell.exe -ArgumentList '-NoExit','-Command','' -WindowStyle Normal`;
+
+    const script = `
+${launch}
+Start-Sleep -Milliseconds 1400
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.SendKeys]::SendWait('+')
+Start-Sleep -Milliseconds 200
+[System.Windows.Forms.SendKeys]::SendWait(${psQuote(command.replace(/([+^%~(){}[\]])/g, '{$1}'))})
+Start-Sleep -Milliseconds 200
+${args.pressEnter === false ? '' : "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')"}
+Write-Output "TYPED"`;
+
+    const r = await runPowerShell(script, { sta: true, timeoutMs: 40000 });
+    if (!r.ok) throw new Error(`Could not type the command: ${r.stderr}`);
+    return {
+      command,
+      shell,
+      pressedEnter: args.pressEnter !== false,
+      note:
+        args.pressEnter === false
+          ? 'The command was typed into a new terminal window and left there for you to read.'
+          : 'The command was typed into a new terminal window and run.',
+    };
+  },
+
+  /** Runs a .bat, .cmd or .ps1 script the user points at. */
+  async run_script_file(args) {
+    const file = String(args.path || '').trim();
+    if (!file) throw new Error('run_script_file needs a path to a .bat, .cmd or .ps1 file.');
+    if (!fs.existsSync(file)) throw new Error(`That script does not exist: ${file}`);
+    const ext = path.extname(file).toLowerCase();
+    if (!['.bat', '.cmd', '.ps1'].includes(ext)) {
+      throw new Error(`run_script_file only runs .bat, .cmd and .ps1 files, not "${ext}".`);
+    }
+    const command = ext === '.ps1' ? `& ${psQuote(file)}` : `cmd.exe /c ${psQuote(file)}`;
+    const r = await runPowerShell(command, { timeoutMs: 120000 });
+    return {
+      path: file,
+      exitCode: r.code,
+      ok: r.ok,
+      stdout: String(r.stdout || '').slice(0, 4000),
+      stderr: String(r.stderr || '').slice(0, 2000),
+    };
+  },
+
+  /**
+   * Edits the text inside a document.
+   *
+   * read_file plus write_file could do this, but the user asked for it as one
+   * action, and doing it in a single read-modify-write avoids the risk of
+   * overwriting a file with a version read before something else changed it.
+   */
+  async edit_document(args) {
+    const file = String(args.path || '').trim();
+    if (!file) throw new Error('edit_document needs a path to a text document.');
+    if (!fs.existsSync(file)) throw new Error(`That document does not exist: ${file}`);
+
+    const mode = String(args.mode || 'replace').toLowerCase();
+    const find = args.find === undefined ? '' : String(args.find);
+    const replaceWith = args.replace === undefined ? '' : String(args.replace);
+    const original = await fsp.readFile(file, 'utf8');
+
+    let updated;
+    if (mode === 'append') {
+      const joiner = original.endsWith('\n') ? '' : '\n';
+      updated = `${original}${joiner}${replaceWith}`;
+    } else if (mode === 'prepend') {
+      updated = `${replaceWith}\n${original}`;
+    } else if (mode === 'find_replace') {
+      if (!find) throw new Error('find_replace needs "find" and "replace".');
+      if (!original.includes(find)) {
+        throw new Error(`That text was not found in ${path.basename(file)}, so nothing was changed.`);
+      }
+      updated = original.split(find).join(replaceWith);
+    } else if (mode === 'overwrite') {
+      updated = replaceWith;
+    } else {
+      throw new Error(`Unknown mode "${mode}". Use replace (default), find_replace, append, prepend or overwrite.`);
+    }
+
+    await fsp.writeFile(file, updated, 'utf8');
+    return {
+      path: file,
+      mode,
+      changed: updated !== original,
+      beforeBytes: Buffer.byteLength(original),
+      afterBytes: Buffer.byteLength(updated),
+      preview: updated.slice(0, 600),
+    };
   },
 
   async press_keys(args) {
@@ -555,6 +895,215 @@ public class W {
     const text = String(args.text ?? '');
     clipboard.writeText(text);
     return { length: text.length, written: true };
+  },
+
+  /**
+   * Finds installed applications by name.
+   *
+   * Start-Process only resolves things on PATH, which covers almost nothing
+   * that is actually installed, so most "open spotify" attempts failed. This
+   * searches where Windows really keeps programs: the App Paths registry key
+   * (which every installer writes), both Start Menu folders, and Program Files.
+   */
+  async find_applications(args) {
+    const query = String(args.name || '').trim();
+    if (!query) throw new Error('find_applications needs a name to look for.');
+    const limit = clamp(Number(args.limit ?? 15), 1, 50);
+    const r = await runPowerShell(appSearchScript(query, limit, false), { timeoutMs: 45000 });
+    const found = parseAppMatches(r.stdout);
+    return { query, matches: found, searched: 'Start Menu, App Paths registry, Program Files', count: found.length };
+  },
+
+  async launch_app(args) {
+    const name = String(args.name || '').trim();
+    if (!name) throw new Error('launch_app needs an app name.');
+    const argPart = args.arguments ? ` -ArgumentList ${psQuote(String(args.arguments))}` : '';
+
+    const script = appSearchScript(name, 5, true, argPart);
+    const r = await runPowerShell(script, { timeoutMs: 60000 });
+    const launched = /LAUNCHED:(.+)/.exec(r.stdout || '');
+    if (launched) {
+      return { app: name, launched: true, path: launched[1].trim(), via: 'search' };
+    }
+
+    // Last resort: the shell's own resolution, which handles bare names on PATH.
+    for (const candidate of [name, `${name}.exe`]) {
+      const attempt = await runPowerShell(`Start-Process ${psQuote(candidate)}${argPart} -ErrorAction Stop`);
+      if (attempt.ok) return { app: name, launched: true, executable: candidate, via: 'path' };
+    }
+
+    const matches = parseAppMatches(r.stdout);
+    const hint = matches.length ? ` Closest matches: ${matches.slice(0, 5).join(', ')}.` : '';
+    throw new Error(
+      `Could not find an application called "${name}" on this PC.${hint} Use find_applications to look, or run_command with a winget install command to install it.`
+    );
+  },
+
+  /**
+   * Windows appearance settings: light or dark mode, transparency and
+   * animation effects, night light.
+   *
+   * Light/dark is a pair of registry values under Personalize, and Windows
+   * only repaints when it is told to, so the script also broadcasts the
+   * change. Everything else goes through SystemParametersInfo, which is what
+   * Settings itself calls - no restart needed.
+   */
+  /**
+   * Changes a named Windows setting.
+   *
+   * The user asked for this to be a whole settings changer rather than just
+   * theme switching, so it covers the groups people actually ask for:
+   * appearance, accessibility, and experimental feature flags.
+   *
+   * Every setting is looked up in a table rather than passed through to the
+   * registry raw, so the model can only ever reach settings that are listed
+   * here. That matters: "change any Windows setting" written as free-form
+   * registry writes would be an unbounded way to break someone's PC.
+   */
+  async change_windows_setting(args) {
+    const setting = String(args.setting || '').trim();
+    const value = args.value;
+    const enabled = value === undefined ? true : value === true || String(value).toLowerCase() === 'true' || String(value).toLowerCase() === 'on' || value === 1;
+
+    const entry = WINDOWS_SETTINGS[setting];
+    if (!entry) {
+      const groups = [...new Set(Object.values(WINDOWS_SETTINGS).map((s) => s.group))].join(', ');
+      throw new Error(
+        `There is no Windows setting called "${setting}" in Shine's list. Available groups: ${groups}. Call list_windows_settings to see every setting Shine knows how to change.`
+      );
+    }
+
+    if (entry.kind === 'theme') {
+      const mode = String(enabled ? 'dark' : 'light').toLowerCase();
+      const r = await execute('set_appearance', { theme: mode });
+      return { setting, group: entry.group, value: mode, ...r.output };
+    }
+
+    if (entry.kind === 'spi') {
+      const on = enabled ? 1 : 0;
+      const r = await runPowerShell(
+        `${USER32_CSHARP}
+$sig = @'
+[DllImport("user32.dll")] public static extern int SystemParametersInfo(uint a, uint b, uint c, uint d);
+'@
+$t = Add-Type -MemberDefinition $sig -Name 'SpiS' -Namespace 'ShineS' -PassThru
+$t::SystemParametersInfo(${entry.spi}, 0, ${on}, ${entry.spiFlags ?? 3}) | Out-Null
+$r2 = Add-Type -MemberDefinition $sig -Name 'SpiR' -Namespace 'ShineR' -PassThru
+$r2::SystemParametersInfo(0x031A, 0, 0, 0x0002) | Out-Null
+Write-Output "SET"`,
+        { timeoutMs: 20000 }
+      );
+      if (!r.ok) throw new Error(`Could not change ${setting}: ${r.stderr}`);
+      return { setting, group: entry.group, value: enabled };
+    }
+
+    // Everything else is a DWORD or string under HKCU.
+    const type = entry.type === 'string' ? 'String' : 'DWord';
+    const stored = type === 'DWord' ? (enabled ? 1 : 0) : String(enabled ? 1 : value);
+    const script = `
+$ErrorActionPreference = 'Stop'
+$key = ${psQuote(entry.key)}
+if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+Set-ItemProperty -Path $key -Name ${psQuote(entry.name)} -Value ${psQuote(stored)} -Type ${type} -Force
+Write-Output "SET"`;
+    const r = await runPowerShell(script, { timeoutMs: 20000 });
+    if (!r.ok) throw new Error(`Could not change ${setting}: ${r.stderr}`);
+    return { setting, group: entry.group, value: enabled, key: entry.key, name: entry.name };
+  },
+
+  /** Reports what every supported Windows setting is currently set to. */
+  async list_windows_settings(args) {
+    const rows = [];
+    for (const [name, entry] of Object.entries(WINDOWS_SETTINGS)) {
+      let current = null;
+      if (entry.kind === 'reg') {
+        const r = await runPowerShell(
+          `try { $v = (Get-ItemProperty -Path ${psQuote(entry.key)} -Name ${psQuote(entry.name)} -ErrorAction Stop).${entry.name}; if ($v -eq 1) { 'on' } elseif ($v -eq 0) { 'off' } else { [string]$v } } catch { 'not set' }`,
+          { timeoutMs: 12000 }
+        );
+        current = r.stdout.trim() || 'unknown';
+      } else if (entry.kind === 'theme') {
+        const r = await runPowerShell(
+          `$v = (Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize' -Name AppsUseLightTheme -ErrorAction SilentlyContinue).AppsUseLightTheme
+if ($v -eq 1) { 'light' } elseif ($v -eq 0) { 'dark' } else { 'system' }`,
+          { timeoutMs: 12000 }
+        );
+        current = r.stdout.trim() || 'system';
+      } else {
+        // Animation and transparency effects live in the window manager, not
+        // the registry, so there is nothing to read back here. Saying so beats
+        // reporting a value that is not real.
+        current = 'not readable - Shine sets it but Windows does not report it';
+      }
+      rows.push({ setting: name, group: entry.group, current, description: entry.description });
+    }
+    return { count: rows.length, settings: rows };
+  },
+
+  async set_appearance(args) {
+    const changes = [];
+    const parts = [];
+
+    const mode = String(args.theme || '').toLowerCase();
+    if (mode) {
+      if (!['light', 'dark', 'system'].includes(mode)) {
+        throw new Error(`theme must be "light", "dark" or "system", not "${mode}".`);
+      }
+      // 0 = dark, 1 = light. "system" clears both so Windows follows the
+      // accent setting again.
+      const light = mode === 'light' ? 1 : mode === 'dark' ? 0 : null;
+      parts.push(`
+$key = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize'
+if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+${light === null
+  ? `Remove-ItemProperty -Path $key -Name AppsUseLightTheme -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path $key -Name SystemUsesLightTheme -ErrorAction SilentlyContinue`
+  : `Set-ItemProperty -Path $key -Name AppsUseLightTheme -Value ${light} -Type DWord -Force
+Set-ItemProperty -Path $key -Name SystemUsesLightTheme -Value ${light} -Type DWord -Force`}
+Write-Output "THEME_SET"`.trim());
+      changes.push(`theme=${mode}`);
+    }
+
+    if (args.transparency !== undefined) {
+      const on = args.transparency ? 1 : 0;
+      parts.push(`
+$sig = @'
+[DllImport("user32.dll")] public static extern int SystemParametersInfo(uint a, uint b, uint c, uint d);
+'@
+$t = Add-Type -MemberDefinition $sig -Name 'Spi' -Namespace 'Shine' -PassThru
+$t::SystemParametersInfo(0x0013, 0, ${on}, 0x0000) | Out-Null
+Write-Output "TRANSPARENCY_SET"`.trim());
+      changes.push(`transparency=${args.transparency ? 'on' : 'off'}`);
+    }
+
+    if (args.animations !== undefined) {
+      const on = args.animations ? 1 : 0;
+      parts.push(`
+$sig2 = @'
+[DllImport("user32.dll")] public static extern int SystemParametersInfo(uint a, uint b, uint c, uint d);
+'@
+$t2 = Add-Type -MemberDefinition $sig2 -Name 'Spi2' -Namespace 'Shine2' -PassThru
+$t2::SystemParametersInfo(0x0048, 0, ${on}, 0x0003) | Out-Null
+Write-Output "ANIMATIONS_SET"`.trim());
+      changes.push(`animations=${args.animations ? 'on' : 'off'}`);
+    }
+
+    if (!parts.length) {
+      throw new Error('set_appearance needs at least one of: theme, transparency, animations.');
+    }
+
+    // Nudge every top-level window into repainting so the change is instant.
+    const refresh = `
+$sigR = @'
+[DllImport("user32.dll")] public static extern int SystemParametersInfo(uint a, uint b, uint c, uint d);
+'@
+$r = Add-Type -MemberDefinition $sigR -Name 'SpiR' -Namespace 'ShineR' -PassThru
+$r::SystemParametersInfo(0x031A, 0, 0, 0x0002) | Out-Null`;
+
+    const script = `${parts.join('\n')}\n${refresh}\nWrite-Output "DONE"`;
+    const r = await runPowerShell(script, { timeoutMs: 30000 });
+    if (!r.ok) throw new Error(`Could not change the appearance settings: ${r.stderr || 'unknown error'}`);
+    return { changed: changes, note: 'Sign-out and back in if some windows do not repaint immediately.' };
   },
 
   async system_power(args) {

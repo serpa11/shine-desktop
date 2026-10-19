@@ -210,17 +210,143 @@ const TOOLS = [
   ),
   T(
     'launch_app',
-    'Start an installed application by its executable name or Start Menu name, e.g. "notepad", "calc", "spotify".',
+    'Open an installed application by name, e.g. "notepad", "calc", "spotify", "chrome". Searches the Start Menu, the App Paths registry and Program Files, so it finds apps that are not on PATH. Pass a full path to open a specific program.',
     {
       type: 'object',
       properties: {
-        name: str('Executable or app name.'),
+        name: str('App name as the user said it, or a full path to an .exe file.'),
         arguments: str('Optional command line arguments.'),
       },
       required: ['name'],
       additionalProperties: false,
     },
     'exec'
+  ),
+  T(
+    'find_applications',
+    'Search this PC for installed applications matching a name and list what was found, without opening anything. Use this when launch_app cannot find something, or to show the user their options.',
+    {
+      type: 'object',
+      properties: {
+        name: str('Part of the app name to look for.'),
+        limit: num('Maximum results. Default 15.'),
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    'read'
+  ),
+  T(
+    'change_windows_setting',
+    'Change one named Windows setting: appearance (dark mode, transparency, taskbar position), accessibility (magnifier, narrator, high contrast, sticky keys, cursor size), or experimental feature flags (Developer Mode, telemetry, ads, tips, search suggestions). Call list_windows_settings first to see every supported name and its current value.',
+    {
+      type: 'object',
+      properties: {
+        setting: str('The setting name, e.g. "dark_mode", "narrator", "high_contrast", "telemetry".'),
+        value: bool('true to switch it on, false to switch it off. For dark_mode, false means light mode.'),
+      },
+      required: ['setting'],
+      additionalProperties: false,
+    },
+    'system'
+  ),
+  T(
+    'list_windows_settings',
+    'List every Windows setting Shine knows how to change, grouped, with its current value. Use this before change_windows_setting so you use a real setting name.',
+    {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    'read'
+  ),
+  T(
+    'move_cursor',
+    'Move the mouse pointer to a screen position. Use take_screenshot to see the screen first and list_windows to find a window.',
+    {
+      type: 'object',
+      properties: {
+        x: num('Screen x coordinate in pixels, from the left edge.'),
+        y: num('Screen y coordinate in pixels, from the top edge.'),
+      },
+      required: ['x', 'y'],
+      additionalProperties: false,
+    },
+    'exec'
+  ),
+  T(
+    'click',
+    'Click the mouse, optionally at a position. Use this together with move_cursor to drive an app that has no keyboard shortcut, such as a wizard dialog.',
+    {
+      type: 'object',
+      properties: {
+        x: num('Optional screen x coordinate. Omit to click where the pointer already is.'),
+        y: num('Optional screen y coordinate.'),
+        button: str('"left" (default), "right" or "middle".'),
+        clicks: num('How many clicks. 2 for a double-click. Default 1.'),
+        wheel: num('Scroll wheel notches. Positive scrolls up, negative down.'),
+      },
+      additionalProperties: false,
+    },
+    'exec'
+  ),
+  T(
+    'type_command',
+    'Open a terminal and type a cmd or PowerShell command into it so the user can see exactly what was run. By default it also presses Enter to run it; set pressEnter to false to just write it out.',
+    {
+      type: 'object',
+      properties: {
+        command: str('The command line to type.'),
+        shell: str('"powershell" (default), "cmd" or "terminal".'),
+        pressEnter: bool('Press Enter to run it. Set false to only type it out.'),
+      },
+      required: ['command'],
+      additionalProperties: false,
+    },
+    'exec'
+  ),
+  T(
+    'run_script_file',
+    'Run a batch or PowerShell script file (.bat, .cmd or .ps1) and report its exit code and output.',
+    {
+      type: 'object',
+      properties: {
+        path: str('Full path to the script file.'),
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    'exec'
+  ),
+  T(
+    'edit_document',
+    'Edit the text inside a document on disk. Can replace the whole file, find and replace a piece of text, append or prepend.',
+    {
+      type: 'object',
+      properties: {
+        path: str('Full path to the text document.'),
+        mode: str('"replace" (default, needs "replace"), "find_replace" (needs "find"), "append", "prepend" or "overwrite".'),
+        find: str('Text to look for, for find_replace.'),
+        replace: str('The text to put in.'),
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    'write'
+  ),
+  T(
+    'set_appearance',
+    'Change how Windows looks: switch between light and dark mode, turn window transparency on or off, and turn animations on or off. Takes effect immediately, no restart needed.',
+    {
+      type: 'object',
+      properties: {
+        theme: str('"light", "dark", or "system" to follow the Windows setting.'),
+        transparency: bool('Turn transparency effects on or off.'),
+        animations: bool('Turn window animations on or off.'),
+      },
+      additionalProperties: false,
+    },
+    'system'
   ),
   T(
     'close_app',
