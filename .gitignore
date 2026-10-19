@@ -1,0 +1,27 @@
+# Dependencies and build output
+node_modules/
+release/
+release-setup/
+release-payload/
+dist/
+*.log
+
+# Generated icon intermediates
+build/icon-*.png
+
+# Local scratch
+shine-diagnostics.json
+shine-test-output.txt
+*.blockmap
+
+# Unrelated files that share this workspace
+Asteroid.ipa
+Asteroid.zip
+Asteroid/
+GestaltEdit.ipa
+GestaltEdit/
+ipa_extract/
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,36 @@
+{
+  "appId": "com.shine.desktop.setup",
+  "productName": "ShineSetup",
+  "copyright": "Copyright (c) 2026 Shine",
+  "asar": true,
+  "directories": {
+    "app": "C:\\Users\\name\\Documents\\Default Project\\setup-app",
+    "output": "C:\\Users\\name\\Documents\\Default Project\\release-setup",
+    "buildResources": "C:\\Users\\name\\Documents\\Default Project\\build"
+  },
+  "files": [
+    "src/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "C:\\Users\\name\\Documents\\Default Project\\release-payload\\shine-app.zip",
+      "to": "payload/shine-app.zip"
+    }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "icon": "C:\\Users\\name\\Documents\\Default Project\\build\\icon.ico"
+  },
+  "portable": {
+    "artifactName": "ShineSetup.exe",
+    "unpackDirName": "ShineSetup"
+  }
+}

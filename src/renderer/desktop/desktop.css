@@ -1,0 +1,421 @@
+/* ==========================================================================
+   Shine Desktop - injected UI
+
+   Deliberately minimal and monochrome:
+     * a window bar with text labels and the three window buttons
+     * an approval dialog for PC Control
+     * a plain activity log
+     * toasts
+
+   There are no logos, no icons beyond the window glyphs, and no colour.
+   ========================================================================== */
+
+:root {
+  --shine-tb-h: 38px;
+  --shine-ink: rgba(255, 255, 255, 0.88);
+  --shine-dim: rgba(255, 255, 255, 0.48);
+  --shine-faint: rgba(255, 255, 255, 0.26);
+  --shine-line: rgba(255, 255, 255, 0.12);
+  --shine-surface: rgba(255, 255, 255, 0.045);
+  --shine-surface-2: rgba(255, 255, 255, 0.09);
+  --shine-accent: #ffffff;
+  --shine-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body.shine-light {
+  --shine-ink: rgba(20, 20, 20, 0.88);
+  --shine-dim: rgba(20, 20, 20, 0.52);
+  --shine-faint: rgba(20, 20, 20, 0.3);
+  --shine-line: rgba(0, 0, 0, 0.13);
+  --shine-surface: rgba(0, 0, 0, 0.035);
+  --shine-surface-2: rgba(0, 0, 0, 0.07);
+  --shine-accent: #141414;
+}
+
+/* --------------------------------------------------------------------------
+   Room for the window bar
+   -------------------------------------------------------------------------- */
+
+html { padding-top: var(--shine-tb-h); }
+body { min-height: calc(100vh - var(--shine-tb-h)); }
+.app-header { top: var(--shine-tb-h) !important; }
+.overlay-window, .shine-live-window { top: var(--shine-tb-h) !important; }
+
+/* --------------------------------------------------------------------------
+   Window bar
+   -------------------------------------------------------------------------- */
+
+.shine-titlebar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: var(--shine-tb-h);
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 16px;
+  background: rgba(0, 0, 0, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--shine-line);
+  color: var(--shine-ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  -webkit-app-region: drag;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+body.shine-light .shine-titlebar { background: rgba(255, 255, 255, 0.92); }
+
+.shine-tb-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--shine-dim);
+  flex: none;
+  white-space: nowrap;
+}
+
+.shine-tb-spacer {
+  flex: 1 1 auto;
+  min-width: 16px;
+  -webkit-app-region: drag;
+  height: 100%;
+}
+
+.shine-tb-btn {
+  -webkit-app-region: no-drag;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--shine-dim);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.14s ease, color 0.14s ease, transform 0.14s ease;
+}
+
+.shine-tb-btn:hover { color: var(--shine-ink); background: var(--shine-surface-2); }
+.shine-tb-btn:active { transform: scale(0.96); }
+
+.shine-tb-btn[aria-pressed='true'] {
+  color: #08080a;
+  background: var(--shine-accent);
+}
+
+body.shine-light .shine-tb-btn[aria-pressed='true'] { color: #fff; }
+
+.shine-tb-account {
+  -webkit-app-region: no-drag;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--shine-faint);
+}
+
+.shine-tb-account:hover { color: var(--shine-ink); background: var(--shine-surface-2); }
+
+.shine-tb-sep {
+  width: 1px;
+  height: 15px;
+  background: var(--shine-line);
+  flex: none;
+  margin: 0 8px;
+}
+
+/* Window buttons: plain SVG glyphs, monochrome, and deliberately inert -
+   no hover or active reaction at all. */
+.shine-tb-win { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; flex: none; }
+
+.shine-tb-winbtn {
+  -webkit-app-region: no-drag;
+  width: 42px;
+  height: var(--shine-tb-h);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--shine-ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  appearance: none;
+}
+
+.shine-tb-winbtn:hover,
+.shine-tb-winbtn:active,
+.shine-tb-winbtn:focus,
+.shine-tb-winbtn:focus-visible {
+  background: transparent;
+  color: var(--shine-ink);
+  outline: none;
+}
+
+.shine-tb-winbtn svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+/* --------------------------------------------------------------------------
+   Dialogs
+   -------------------------------------------------------------------------- */
+
+.shine-modal-root {
+  position: fixed;
+  inset: var(--shine-tb-h) 0 0 0;
+  z-index: 4000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(0, 0, 0, 0.66);
+  font-family: inherit;
+  color: var(--shine-ink);
+  box-sizing: border-box;
+}
+
+body.shine-light .shine-modal-root { background: rgba(20, 20, 20, 0.34); }
+
+.shine-modal-root.open { display: flex; animation: shine-modal-fade 0.16s ease both; }
+
+@keyframes shine-modal-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.shine-modal {
+  width: min(600px, 100%);
+  max-height: calc(100vh - var(--shine-tb-h) - 56px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--shine-line);
+  border-radius: 10px;
+  background: #0b0b0c;
+  color: var(--shine-ink);
+  overflow: hidden;
+  animation: shine-modal-in 0.22s var(--shine-ease) both;
+}
+
+body.shine-light .shine-modal { background: #fff; }
+
+@keyframes shine-modal-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+.shine-modal-head { padding: 20px 22px 14px; border-bottom: 1px solid var(--shine-line); }
+
+.shine-modal-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+
+.shine-modal-sub { margin-top: 4px; font-size: 12px; color: var(--shine-dim); }
+
+.shine-modal-body {
+  padding: 18px 22px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--shine-dim);
+}
+
+.shine-modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--shine-line);
+  flex-wrap: wrap;
+}
+
+.shine-modal-foot .grow { flex: 1; }
+
+.shine-code {
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--shine-line);
+  border-radius: 8px;
+  background: var(--shine-surface);
+  color: var(--shine-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.shine-notes { margin: 14px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+
+.shine-notes li {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--shine-dim);
+  padding-left: 14px;
+  position: relative;
+}
+
+.shine-notes li::before {
+  content: "-";
+  position: absolute;
+  left: 0;
+  color: var(--shine-faint);
+}
+
+.shine-hint { margin-top: 10px; font-size: 12px; line-height: 1.55; color: var(--shine-faint); }
+
+.shine-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--shine-dim);
+}
+
+.shine-remember input[type='text'] {
+  flex: 1;
+  min-width: 80px;
+  background: var(--shine-surface);
+  border: 1px solid var(--shine-line);
+  border-radius: 6px;
+  color: var(--shine-ink);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+}
+
+.shine-btn {
+  border: 1px solid var(--shine-line);
+  background: var(--shine-surface);
+  color: var(--shine-ink);
+  font: inherit;
+  font-size: 13px;
+  border-radius: 7px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background 0.14s ease, transform 0.14s ease, opacity 0.14s ease;
+}
+
+.shine-btn:hover:not(:disabled) { background: var(--shine-surface-2); }
+.shine-btn:active:not(:disabled) { transform: scale(0.97); }
+.shine-btn:disabled { opacity: 0.4; cursor: default; }
+
+.shine-btn.primary {
+  background: var(--shine-accent);
+  border-color: var(--shine-accent);
+  color: #08080a;
+  font-weight: 500;
+}
+
+body.shine-light .shine-btn.primary { color: #fff; }
+
+.shine-btn.danger { background: var(--shine-ink); border-color: transparent; color: #08080a; font-weight: 500; }
+body.shine-light .shine-btn.danger { color: #fff; }
+
+/* --------------------------------------------------------------------------
+   Activity log
+   -------------------------------------------------------------------------- */
+
+.shine-log { border: 1px solid var(--shine-line); border-radius: 8px; overflow: hidden; }
+
+.shine-log-row {
+  display: grid;
+  grid-template-columns: 66px 128px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--shine-line);
+  font-size: 11.5px;
+}
+
+.shine-log-row:last-child { border-bottom: none; }
+
+.shine-log-time { color: var(--shine-faint); font-variant-numeric: tabular-nums; }
+
+.shine-log-tool {
+  color: var(--shine-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shine-log-what { color: var(--shine-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.shine-empty { padding: 24px 12px; text-align: center; color: var(--shine-faint); font-size: 12.5px; }
+
+/* PC Control action summary appended after an answer */
+.shine-tool-summary p { margin: 0 0 6px; }
+.shine-tool-summary ul { margin: 0; padding-left: 18px; }
+.shine-tool-summary li { margin-bottom: 3px; font-size: 12.5px; }
+.shine-tool-summary code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+body.shine-light .shine-tool-summary code { background: rgba(0, 0, 0, 0.06); }
+
+/* --------------------------------------------------------------------------
+   Toasts
+   -------------------------------------------------------------------------- */
+
+.shine-toasts {
+  position: fixed;
+  right: 16px;
+  top: calc(var(--shine-tb-h) + 12px);
+  z-index: 4200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 340px;
+}
+
+.shine-toast {
+  pointer-events: auto;
+  padding: 10px 13px;
+  border: 1px solid var(--shine-line);
+  border-radius: 8px;
+  background: rgba(12, 12, 13, 0.96);
+  color: var(--shine-ink);
+  font-size: 12.5px;
+  line-height: 1.5;
+  animation: shine-toast-in 0.24s var(--shine-ease) both;
+}
+
+body.shine-light .shine-toast { background: rgba(255, 255, 255, 0.98); }
+
+.shine-toast.leaving { animation: shine-toast-out 0.2s ease both; }
+
+@keyframes shine-toast-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes shine-toast-out { to { opacity: 0; transform: translateX(18px); } }
+
+.shine-toast-title { font-weight: 500; }
+.shine-toast-text { color: var(--shine-dim); margin-top: 2px; word-break: break-word; }
+
+/* --------------------------------------------------------------------------
+   Small screens
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 680px) {
+  .shine-tb-title { display: none; }
+  .shine-log-row { grid-template-columns: 54px 1fr; }
+  .shine-log-what { display: none; }
+}

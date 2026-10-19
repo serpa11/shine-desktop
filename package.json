@@ -1,0 +1,85 @@
+{
+  "name": "shine-desktop",
+  "productName": "Shine",
+  "version": "1.0.0",
+  "description": "Shine AI desktop app with native window controls, microphone dictation and permissioned PC control.",
+  "main": "src/main/main.js",
+  "author": {
+    "name": "Shine Desktop"
+  },
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "test": "node test/run-tests.js",
+    "test:mic": "node test/mic-tests.js",
+    "test:accounts": "node test/account-tests.js",
+    "mock": "node test/mock-provider.js",
+    "build": "electron-builder --win nsis --x64",
+    "postbuild": "node scripts/stamp-icon.js",
+    "release": "node scripts/build-all.js",
+    "build:dir": "electron-builder --win nsis --x64 --dir",
+    "icon": "node build/make-icon.js",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {},
+  "optionalDependencies": {},
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.shine.desktop",
+    "productName": "Shine",
+    "copyright": "Copyright © 2026 Shine Desktop",
+    "asar": true,
+    "asarUnpack": [
+      "vendor/**"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "vendor/**/*",
+      "build/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "ShineSetup-${version}.${ext}",
+      "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": false
+    },
+    "afterPack": "scripts/after-pack.js",
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Shine",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "menuCategory": false,
+      "runAfterFinish": true,
+      "artifactName": "ShineSetup-${version}.${ext}"
+    }
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}

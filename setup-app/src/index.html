@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Shine Setup</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="bar-title" id="barTitle">Shine Setup</span>
+      <span class="bar-spacer"></span>
+      <button class="bar-btn" id="btnMin" title="Minimise" aria-label="Minimise">
+        <svg viewBox="0 0 24 24"><path d="M5 12h14" /></svg>
+      </button>
+      <button class="bar-btn exit" id="btnQuit" title="Close" aria-label="Close">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12" /><path d="M18 6L6 18" /></svg>
+      </button>
+    </header>
+
+    <main id="app" aria-live="polite">
+      <section class="page" id="page-intro">
+        <h1 class="title" id="introTitle">Shine Setup</h1>
+        <p class="text" id="introText">Choose where to install Shine.</p>
+      </section>
+
+      <section class="page" id="page-options" hidden>
+        <div class="field">
+          <label class="label" for="installDir">Install location</label>
+          <div class="row">
+            <input class="input" id="installDir" type="text" spellcheck="false" />
+            <button class="btn" id="btnBrowse" type="button">Browse</button>
+          </div>
+          <div class="hint" id="diskHint"></div>
+        </div>
+
+        <div class="field">
+          <div class="label">Options</div>
+          <label class="check"><input type="checkbox" id="optDesktop" checked /> <span>Create a desktop shortcut</span></label>
+          <label class="check"><input type="checkbox" id="optStartMenu" checked /> <span>Create a Start Menu shortcut</span></label>
+          <label class="check"><input type="checkbox" id="optStartup" /> <span>Start Shine when I sign in to Windows</span></label>
+          <label class="check"><input type="checkbox" id="optLaunch" checked /> <span>Open Shine when the install finishes</span></label>
+        </div>
+      </section>
+
+      <section class="page" id="page-progress" hidden>
+        <h2 class="title" id="progressTitle">Installing</h2>
+        <p class="text" id="progressStep">Preparing...</p>
+        <div class="bar-track"><div class="bar-fill" id="progressFill"></div></div>
+      </section>
+
+      <section class="page" id="page-done" hidden>
+        <h2 class="title" id="doneTitle">Shine is installed</h2>
+        <p class="text" id="doneText"></p>
+      </section>
+    </main>
+
+    <footer class="foot" id="foot">
+      <button class="btn ghost" id="btnCancel" type="button">Cancel</button>
+      <span class="grow"></span>
+      <button class="btn primary" id="btnNext" type="button">Next</button>
+    </footer>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

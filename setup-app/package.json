@@ -1,0 +1,17 @@
+{
+  "name": "shine-setup",
+  "productName": "ShineSetup",
+  "version": "1.0.0",
+  "description": "Installer for Shine",
+  "main": "src/main.js",
+  "author": {
+    "name": "Shine"
+  },
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

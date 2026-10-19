@@ -1,0 +1,28 @@
+{
+  "pcControl": {
+    "enabled": true,
+    "allowlist": [],
+    "allowReadOnlyWithoutPrompt": true,
+    "maxSteps": 8,
+    "dangerMode": false
+  },
+  "mic": {
+    "engine": "api",
+    "language": "auto",
+    "model": "whisper-1",
+    "voskModelPath": ""
+  },
+  "window": {
+    "width": 1180,
+    "height": 820,
+    "maximized": false
+  },
+  "app": {
+    "useRemoteSite": true,
+    "remoteUrl": "https://shineai-9mr.pages.dev/",
+    "launchOnStartup": false
+  },
+  "telemetry": {
+    "activityLog": true
+  }
+}
