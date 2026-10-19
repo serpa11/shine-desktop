@@ -40,6 +40,55 @@ function Step($message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
 
 function Fail($message) { Write-Host "FAILED: $message" -ForegroundColor Red; Pop-Location; exit 1 }
 
+<#
+    gh and git write progress, warnings and ordinary "not found" messages to
+    stderr. With $ErrorActionPreference = 'Stop' PowerShell promotes those to
+    terminating errors, so a routine check like `gh repo view` on a repo that
+    does not exist yet would abort the whole script.
+
+    Native commands are therefore run with the preference relaxed, and success
+    is judged by exit code instead - which is what the caller was checking all
+    along.
+#>
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [switch]$ShowOutput
+    )
+
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $FilePath @Arguments 2>&1
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+
+    $script:NativeExit = $LASTEXITCODE
+    $script:NativeOutput = @($output)
+
+    if ($ShowOutput) {
+        foreach ($line in $script:NativeOutput) {
+            Write-Host ("  " + ($line | Out-String).TrimEnd())
+        }
+    }
+}
+
+function Invoke-Gh {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    Invoke-Native -FilePath 'gh' -Arguments $Arguments
+}
+
+function Invoke-Git {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    Invoke-Native -FilePath 'git' -Arguments $Arguments
+}
+
+# Convenience readers for the last Invoke-Native result.
+function ExitCode { $script:NativeExit }
+function OutputText { ($script:NativeOutput | Out-String).Trim() }
+
 try {
     # ---------------------------------------------------------------- gh
     Step 'Checking for the GitHub CLI'
@@ -60,9 +109,8 @@ try {
 
     # ------------------------------------------------------------- auth
     Step 'Checking authentication'
-    $authed = $false
-    gh auth status *> $null
-    if ($LASTEXITCODE -eq 0) { $authed = $true }
+    Invoke-Gh auth status
+    $authed = (ExitCode) -eq 0
 
     if (-not $authed) {
         if (-not $Token) { $Token = $env:GITHUB_TOKEN }
@@ -75,40 +123,50 @@ try {
             if ($LASTEXITCODE -ne 0) { Fail 'Sign-in did not complete.' }
         }
     }
-    $account = gh api user --jq .login
+
+    Invoke-Gh api user '--jq' '.login'
+    if ((ExitCode) -ne 0) { Fail 'Could not read the authenticated GitHub user.' }
+    $account = OutputText
     if (-not $account) { Fail 'Could not read the authenticated GitHub user.' }
     Write-Host "Signed in as $account."
 
     # ------------------------------------------------------------- repo
     Step "Creating $account/$RepoName ($Visibility)"
-    $exists = $false
-    gh repo view "$account/$RepoName" *> $null
-    if ($LASTEXITCODE -eq 0) { $exists = $true }
+    Invoke-Gh repo view "$account/$RepoName"
+    $exists = (ExitCode) -eq 0
 
     if ($exists) {
         Write-Host 'Repository already exists, using it.'
     } else {
-        gh repo create "$account/$RepoName" --$Visibility --source . --remote origin | Out-Null
-        if ($LASTEXITCODE -ne 0) { Fail 'Could not create the repository.' }
+        Invoke-Gh repo create "$account/$RepoName" "--$Visibility" '--source' '.' '--remote' 'origin'
+        if ((ExitCode) -ne 0) { Fail "Could not create the repository. gh said: $(OutputText)" }
         Write-Host 'Repository created.'
     }
 
     # ------------------------------------------------------------- push
     Step 'Pushing the source'
-    if ((git symbolic-ref --short HEAD) -eq 'HEAD') { git checkout -q -b main }
+    Invoke-Git symbolic-ref '--short' 'HEAD'
+    if ((ExitCode) -ne 0 -or (OutputText) -eq 'HEAD') { Invoke-Git checkout '-q' '-b' 'main' }
 
     # Pick up anything changed since the last commit, ignoring build output
     # and the unrelated projects that share this folder.
-    git add -A
-    if (-not (git diff --cached --quiet)) {
-        git commit -q -m 'Shine desktop app'
+    Invoke-Git add '-A'
+    if ((ExitCode) -ne 0) { Fail 'git add failed.' }
+
+    # --quiet exits 1 when there is something staged.
+    Invoke-Git diff '--cached' '--quiet'
+    if ((ExitCode) -ne 0) {
+        Invoke-Git commit '-q' '-m' 'Shine desktop app'
+        if ((ExitCode) -ne 0) { Fail 'git commit failed.' }
         Write-Host 'Committed local changes.'
+    } else {
+        Write-Host 'Nothing new to commit.'
     }
 
-    git remote remove origin *> $null
-    git remote add origin "https://github.com/$account/$RepoName.git"
-    git push -q -u origin HEAD
-    if ($LASTEXITCODE -ne 0) { Fail 'Push failed.' }
+    Invoke-Git remote 'remove' 'origin'
+    Invoke-Git remote 'add' 'origin' "https://github.com/$account/$RepoName.git"
+    Invoke-Git push '-q' '-u' 'origin' 'HEAD'
+    if ((ExitCode) -ne 0) { Fail "Push failed. git said: $(OutputText)" }
     Write-Host 'Pushed.'
 
     # ----------------------------------------------------------- release
@@ -136,20 +194,17 @@ try {
         $Notes = @"
 Shine Setup $version
 
-`ShineSetup.exe is the installer. It shows you the install location and
-asks whether you want a desktop shortcut, a Start Menu shortcut, Shine to
-start with Windows, and whether to open it when the install finishes.
+ShineSetup.exe is the installer. It shows you the install location and asks whether you want a desktop shortcut, a Start Menu shortcut, Shine to start with Windows, and whether to open it when the install finishes.
 
-The app adds three things to shineai-9mr.pages.dev: real window buttons,
-a PC Control mode that asks before every action it takes, and dictation
-through the site's own microphone button.
+The app adds three things to shineai-9mr.pages.dev: real window buttons, a PC Control mode that asks before every action it takes, and dictation through the site's own microphone button.
 "@
     }
 
-    gh release create $tag @assets --title "Shine $version" --notes $Notes
-    if ($LASTEXITCODE -ne 0) {
+    Invoke-Gh release create $tag @assets '--title' "Shine $version" '--notes' $Notes -ShowOutput
+    if ((ExitCode) -ne 0) {
         Write-Host 'Tagging an existing release instead...'
-        gh release upload $tag @assets --clobber
+        Invoke-Gh release upload $tag @assets '--clobber' -ShowOutput
+        if ((ExitCode) -ne 0) { Fail "Could not attach the installers. gh said: $(OutputText)" }
     }
 
     Write-Host "`nDone." -ForegroundColor Green
