@@ -250,6 +250,30 @@ async function sweepParked() {
 }
 
 /**
+ * Removes <app>.repair-* folders left behind by an earlier repair.
+ *
+ * Each is a full copy of the app, about 180 MB, and one was left sitting in
+ * Programs\ for days. A repair parks the old folder so a locked file cannot
+ * leave a half-repaired install; when the park cannot be deleted straight
+ * away, the next install takes it out.
+ */
+async function sweepRepairFolders(parentDir) {
+  let names = [];
+  try {
+    names = fs.readdirSync(parentDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!/^Shine\.repair-\d+$/.test(name)) continue;
+    const target = path.join(parentDir, name);
+    // Anything still running out of it has to be closed first.
+    await runPowerShell(`Get-Process -Name ${psQuote(APP_NAME)} -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`);
+    await runPowerShell(`Remove-Item -LiteralPath ${psQuote(target)} -Recurse -Force -ErrorAction SilentlyContinue`);
+  }
+}
+
+/**
  * Confirms the app is really on disk before it is advertised in Add/Remove
  * Programs. Registering a half-extracted install is worse than not installing:
  * Windows would offer an Uninstall that launches a file which is not there,
@@ -344,7 +368,13 @@ async function repair(options, onStep) {
     if (fs.existsSync(dir)) {
       throw new Error(`${dir} could not be replaced. Close anything using it and try again.`);
     }
-    await runPowerShell(`Remove-Item -LiteralPath ${psQuote(parked)} -Recurse -Force -ErrorAction SilentlyContinue`);
+    // A parked folder is 180 MB of dead weight. If it will not delete, it is
+    // parked again under a name the next install sweeps up, rather than being
+    // left behind forever next to Programs\Shine.
+    const removed = await runPowerShell(`Remove-Item -LiteralPath ${psQuote(parked)} -Recurse -Force -ErrorAction SilentlyContinue`);
+    if (fs.existsSync(parked)) {
+      await parkExecutable(parked);
+    }
   }
 
   onStep?.('Restoring Shine', 0.45);
@@ -396,6 +426,7 @@ async function install(options, onStep) {
 
   onStep?.('Removing any previous copy', 0.05);
   await sweepParked();
+  await sweepRepairFolders(path.dirname(dir));
   if (fs.existsSync(dir)) {
     // Nothing should be running out of the old folder now. If something is,
     // say so plainly rather than extracting on top of a broken copy.
@@ -502,5 +533,5 @@ module.exports = {
   APP_NAME, defaultInstallDir, desktopDir, startMenuDir, startupDir,
   checkDisk, isInstalled, previousInstall, verifyInstall, install, repair,
   uninstall, setupExePath, parkExecutable, scheduleRebootDelete, sweepParked,
-  parkedFiles, runPowerShell,
+  sweepRepairFolders, parkedFiles, runPowerShell,
 };

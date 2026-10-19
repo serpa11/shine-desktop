@@ -119,6 +119,17 @@ function check(name, condition, detail) {
   const third = await installer.repair({});
   check('repair works with no options', (await installer.verifyInstall(third.installDir)).ok);
 
+  console.log('\nRepair does not leave 180 MB folders behind');
+  // A repair that cannot delete the folder it parked ends up leaving a full
+  // copy of the app next to it, which is what happened on the user's PC.
+  const orphan = `${dir}.repair-1700000000000`;
+  fs.mkdirSync(orphan, { recursive: true });
+  fs.writeFileSync(path.join(orphan, 'Shine.exe'), 'x'.repeat(1024));
+  check('a leftover repair folder exists before installing', fs.existsSync(orphan));
+
+  await installer.sweepRepairFolders(path.dirname(dir));
+  check('installing sweeps leftover repair folders', !fs.existsSync(orphan));
+
   console.log('\nUninstalling');
   await installer.uninstall();
   check('removes the app', !fs.existsSync(dir));
