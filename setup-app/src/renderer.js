@@ -25,13 +25,20 @@ function show(name) {
  *   Install Shine Desktop  - fresh install over the chosen folder
  *   Repair Installation    - restore program files, keep your account
  *   Uninstall              - offered only when this is the uninstaller
+ *
+ * In the uninstaller, Uninstall is the primary action. Offering "Install" as
+ * the main button on the way to removing the app meant pressing it installed
+ * instead of uninstalling, which is the opposite of what anyone in this
+ * window was asking for.
  */
-function setFooter({ cancel, install, repair, uninstall, disabled } = {}) {
+function setFooter({ cancel, install, repair, uninstall, primary, disabled } = {}) {
   $('btnCancel').style.display = cancel === false ? 'none' : '';
   $('btnNext').style.display = install === false ? 'none' : '';
   $('btnNext').textContent = install || 'Install Shine Desktop';
   $('btnRepair').style.display = repair === false ? 'none' : '';
   $('btnUninstall').style.display = uninstall === false ? 'none' : '';
+  $('btnUninstall').classList.toggle('primary', primary === 'uninstall');
+  $('btnNext').classList.toggle('primary', primary !== 'uninstall');
   $('btnNext').disabled = Boolean(disabled);
   $('btnRepair').disabled = Boolean(disabled);
   $('btnUninstall').disabled = Boolean(disabled);
@@ -77,14 +84,21 @@ async function init() {
   }
 
   show('intro');
-  setFooter({ uninstall: isUninstaller ? 'Uninstall' : false });
+  // The uninstaller offers Uninstall and Repair, and nothing else. Offering
+  // "Install Shine Desktop" here put a button in the way out of the app that
+  // would put the app back.
+  setFooter({
+    install: isUninstaller ? false : 'Install Shine Desktop',
+    uninstall: isUninstaller ? 'Uninstall' : false,
+    primary: isUninstaller ? 'uninstall' : 'install',
+  });
 
   // Development aid: open straight onto a page, e.g. ?page=options
   const startPage = new URLSearchParams(location.search).get('page');
   if (startPage === 'options' || startPage === 'done') {
     stage = 'options';
     show('options');
-    setFooter({ cancel: 'Back', repair: false });
+    setFooter({ cancel: 'Back', repair: false, primary: 'install' });
   }
 }
 
@@ -118,7 +132,7 @@ async function onInstall() {
 
   if (stage === 'intro') {
     show('options');
-    setFooter({ cancel: 'Back', repair: false });
+    setFooter({ cancel: 'Back', repair: false, primary: 'install' });
     stage = 'options';
     return;
   }
@@ -162,12 +176,16 @@ async function onRepair() {
       ? `Restored into ${result.installDir}. Missing again: ${result.missing.join(', ')}. Your account and chats were left alone.`
       : `Reinstalled cleanly into ${result.installDir}. Your account and chats were left alone.`;
     show('done');
-    setFooter({ cancel: false, install: 'Finish', repair: false, uninstall: false });
+    setFooter({ cancel: false, install: 'Finish', repair: false, uninstall: false, primary: 'install' });
   } catch (err) {
     busy = false;
     stage = 'intro';
     show('intro');
-    setFooter({ uninstall: state.mode === 'uninstall' ? 'Uninstall' : false });
+    setFooter({
+    install: state.mode === 'uninstall' ? false : 'Install Shine Desktop',
+    uninstall: state.mode === 'uninstall' ? 'Uninstall' : false,
+    primary: state.mode === 'uninstall' ? 'uninstall' : 'install',
+  });
     $('introText').textContent = `Repair failed: ${err.message}`;
   }
 }
@@ -181,7 +199,11 @@ async function onCancel() {
   if (stage === 'progress') return; // never interrupt mid-install
   if (stage === 'intro') return window.setup.quit();
   show('intro');
-  setFooter({ uninstall: state.mode === 'uninstall' ? 'Uninstall' : false });
+  setFooter({
+    install: state.mode === 'uninstall' ? false : 'Install Shine Desktop',
+    uninstall: state.mode === 'uninstall' ? 'Uninstall' : false,
+    primary: state.mode === 'uninstall' ? 'uninstall' : 'install',
+  });
   stage = 'intro';
 }
 
@@ -209,7 +231,7 @@ async function runInstall() {
     $('doneTitle').textContent = 'Shine is installed';
     $('doneText').textContent = `Installed into ${result.installDir}.`;
     show('done');
-    setFooter({ cancel: false, install: $('optLaunch').checked ? 'Open Shine' : 'Finish', repair: false, uninstall: false });
+    setFooter({ cancel: false, install: $('optLaunch').checked ? 'Open Shine' : 'Finish', repair: false, uninstall: false, primary: 'install' });
 
     if ($('optLaunch').checked) {
       $('btnNext').addEventListener(
@@ -222,7 +244,7 @@ async function runInstall() {
     busy = false;
     stage = 'options';
     show('options');
-    setFooter({ cancel: 'Back', repair: false });
+    setFooter({ cancel: 'Back', repair: false, primary: 'install' });
     $('diskHint').textContent = `Install failed: ${err.message}`;
   }
 }
@@ -249,12 +271,12 @@ async function runUninstall() {
       $('doneText').textContent = 'The application and its shortcuts were removed. Your account and chats were left alone.';
     }
     show('done');
-    setFooter({ cancel: false, install: 'Finish', repair: false, uninstall: false });
+    setFooter({ cancel: false, install: 'Finish', repair: false, uninstall: false, primary: 'install' });
   } catch (err) {
     busy = false;
     stage = 'intro';
     show('intro');
-    setFooter({ uninstall: 'Uninstall' });
+    setFooter({ install: false, uninstall: 'Uninstall', primary: 'uninstall' });
     $('introText').textContent = `Uninstall failed: ${err.message}`;
   }
 }

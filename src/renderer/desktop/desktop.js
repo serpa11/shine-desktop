@@ -102,6 +102,29 @@
         }, ttl || 4200);
         return node;
       },
+
+      /**
+       * A refusal the user has to notice. The 4 second toast was not enough:
+       * switching on PC Control would silently do nothing, the button would
+       * not change, and there was no way to tell whether it was broken or
+       * being told no.
+       */
+      block: function (title, text) {
+        var node = el('div', { class: 'shine-toast sticky' }, [
+          el('div', { class: 'shine-toast-title', text: title }),
+          text ? el('div', { class: 'shine-toast-text', text: String(text) }) : null,
+          el('button', {
+            class: 'shine-toast-close',
+            type: 'button',
+            text: 'Close',
+            onclick: function () {
+              if (node.parentNode) node.parentNode.removeChild(node);
+            },
+          }),
+        ]);
+        ensure().appendChild(node);
+        return node;
+      },
     };
   })();
 
@@ -1163,13 +1186,19 @@
 
       var ai = ShineStore.ai();
       if (!ai.activeProvider) {
-        ToastHost.show('No AI provider', 'Open Shine Settings and add an API key first.', 7000);
+        ToastHost.block(
+          'PC Control needs an AI provider',
+          'Control PC was not switched on. Open Shine Settings, choose a provider and paste your API key, then press Control PC again.'
+        );
         return;
       }
 
       var supported = await D.pc.isSupportedProvider(ai.activeProvider);
       if (!supported.supported) {
-        ToastHost.show('Provider not supported', 'Use ChatGPT, Claude, Gemini, Groq, OpenRouter, Grok or a Custom endpoint.', 7000);
+        ToastHost.block(
+          'That provider cannot drive the PC',
+          '"' + ai.activeProvider + '" is not supported. Use ChatGPT, Claude, Gemini, Groq, OpenRouter, Grok or a Custom endpoint, then press Control PC again.'
+        );
         return;
       }
 

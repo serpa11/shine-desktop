@@ -308,6 +308,18 @@ app.whenReady().then(() => {
   const win = windowManager.createWindow();
   if (isDebugDump) require('./diagnostics').attach(win);
   if (isDrive) require('../../test/driver').attach(win);
+  if (process.argv.includes('--drive-pc')) {
+    require('../../test/pc-driver')
+      .run(win, process.argv[process.argv.indexOf('--drive-pc') + 1] || 'pc-result.json')
+      .then((passed) => {
+        console.log(passed ? 'PC_CHECK pass' : 'PC_CHECK fail');
+        app.exit(passed ? 0 : 1);
+      })
+      .catch((err) => {
+        console.error('pc driver failed:', err);
+        app.exit(1);
+      });
+  }
   if (process.argv.includes('--drive-provider')) {
     require('../../test/provider-driver')
       .run(win, process.argv[process.argv.indexOf('--drive-provider') + 1] || 'provider-result.json')
