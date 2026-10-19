@@ -15,7 +15,31 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 
 const APP_NAME = 'Shine';
-const UNINSTALL_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Shine';
+
+// PowerShell registry provider paths need the "drive:" prefix. Without it,
+// HKCU\Software\... is treated as a relative folder path and nothing is
+// written to the registry.
+const UNINSTALL_KEY = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Shine';
+
+// Tests redirect these so they never touch the real desktop, Start Menu or
+// registry.
+const TEST_MODE = process.env.SHINE_INSTALLER_TEST === '1';
+const TEST_KEY = 'HKCU:\\Software\\ShineInstallerTests\\Shine';
+const registryKey = TEST_MODE ? TEST_KEY : UNINSTALL_KEY;
+
+function desktopRoot() {
+  return process.env.SHINE_TEST_DESKTOP_DIR || desktopDir();
+}
+
+function startMenuRoot() {
+  if (process.env.SHINE_TEST_STARTMENU_DIR) return process.env.SHINE_TEST_STARTMENU_DIR;
+  return startMenuDir();
+}
+
+function startupRoot() {
+  if (process.env.SHINE_TEST_STARTMENU_DIR) return path.join(process.env.SHINE_TEST_STARTMENU_DIR, 'Startup');
+  return startupDir();
+}
 
 /* ------------------------------------------------------------------ */
 /* PowerShell                                                         */
@@ -96,7 +120,7 @@ async function isInstalled(dir) {
 
 async function previousInstall() {
   // Read the location recorded by a previous install, if there was one.
-  const out = await runPowerShell(`try { (Get-ItemProperty -Path ${psQuote(UNINSTALL_KEY)} -ErrorAction Stop).InstallLocation } catch { '' }`);
+  const out = await runPowerShell(`try { (Get-ItemProperty -Path ${psQuote(registryKey)} -ErrorAction Stop).InstallLocation } catch { '' }`);
   const value = out.stdout.trim();
   return value && fs.existsSync(value) ? value : null;
 }
@@ -143,7 +167,7 @@ async function createShortcut(target, shortcutPath, description) {
 }
 
 async function setRunAtStartup(target, enabled) {
-  const startup = startupDir();
+  const startup = startupRoot();
   if (!startup) return;
   const link = path.join(startup, `${APP_NAME}.lnk`);
   if (!enabled) {
@@ -155,19 +179,23 @@ async function setRunAtStartup(target, enabled) {
 
 async function registerUninstall(dir, version) {
   const uninstaller = path.join(dir, `Uninstall ${APP_NAME}.exe`);
-  await runPowerShell(`
-    $key = ${psQuote(UNINSTALL_KEY)}
+  const result = await runPowerShell(`
+    $ErrorActionPreference = 'Stop'
+    $key = ${psQuote(registryKey)}
     New-Item -Path $key -Force | Out-Null
-    Set-ItemProperty -Path $key -Name 'DisplayName' -Value ${psQuote(APP_NAME)}
+    Set-ItemProperty -Path $key -Name 'DisplayName' -Value ${psQuote(APP_NAME)} -Force
     Set-ItemProperty -Path $key -Name 'DisplayVersion' -Value ${psQuote(version)}
     Set-ItemProperty -Path $key -Name 'Publisher' -Value ${psQuote(APP_NAME)}
     Set-ItemProperty -Path $key -Name 'InstallLocation' -Value ${psQuote(dir)}
     Set-ItemProperty -Path $key -Name 'DisplayIcon' -Value ${psQuote(path.join(dir, 'Shine.exe'))}
     Set-ItemProperty -Path $key -Name 'UninstallString' -Value ${psQuote(`"${uninstaller}" --uninstall`)}
     Set-ItemProperty -Path $key -Name 'QuietUninstallString' -Value ${psQuote(`"${uninstaller}" --uninstall`)}
-    Set-ItemProperty -Path $key -Name 'NoModify' -Value 1 -Type DWord
-    Set-ItemProperty -Path $key -Name 'NoRepair' -Value 1 -Type DWord
+    Set-ItemProperty -Path $key -Name 'NoModify' -Value 1
+    Set-ItemProperty -Path $key -Name 'NoRepair' -Value 1
+    Set-ItemProperty -Path $key -Name 'EstimatedSize' -Value 250000
   `);
+
+  if (!result.ok) throw new Error(`Could not register Shine for uninstall: ${result.stderr || 'unknown error'}`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -195,10 +223,10 @@ async function install(options, onStep) {
 
   onStep?.('Creating shortcuts', 0.9);
   if (options.desktopShortcut) {
-    await createShortcut(exe, path.join(desktopDir(), `${APP_NAME}.lnk`), APP_NAME);
+    await createShortcut(exe, path.join(desktopRoot(), `${APP_NAME}.lnk`), APP_NAME);
   }
-  if (options.startMenuShortcut && startMenuDir()) {
-    await createShortcut(exe, path.join(startMenuDir(), `${APP_NAME}.lnk`), APP_NAME);
+  if (options.startMenuShortcut && startMenuRoot()) {
+    await createShortcut(exe, path.join(startMenuRoot(), `${APP_NAME}.lnk`), APP_NAME);
   }
   await setRunAtStartup(exe, Boolean(options.runAtStartup));
 
@@ -218,11 +246,14 @@ async function uninstall(onStep) {
   await runPowerShell(`Get-Process -Name ${psQuote(APP_NAME)} -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`);
 
   onStep?.('Removing shortcuts', 0.35);
-  await runPowerShell(`
-    Remove-Item -LiteralPath ${psQuote(path.join(desktopDir(), `${APP_NAME}.lnk`))} -Force -ErrorAction SilentlyContinue
-    ${startMenuDir() ? `Remove-Item -LiteralPath ${psQuote(path.join(startMenuDir(), `${APP_NAME}.lnk`))} -Force -ErrorAction SilentlyContinue` : ''}
-    ${startupDir() ? `Remove-Item -LiteralPath ${psQuote(path.join(startupDir(), `${APP_NAME}.lnk`))} -Force -ErrorAction SilentlyContinue` : ''}
-  `);
+  const shortcutPaths = [
+    path.join(desktopRoot(), `${APP_NAME}.lnk`),
+    startMenuRoot() ? path.join(startMenuRoot(), `${APP_NAME}.lnk`) : null,
+    startupRoot() ? path.join(startupRoot(), `${APP_NAME}.lnk`) : null,
+  ].filter(Boolean);
+  await runPowerShell(
+    shortcutPaths.map((p) => `Remove-Item -LiteralPath ${psQuote(p)} -Force -ErrorAction SilentlyContinue`).join('\n')
+  );
 
   onStep?.('Deleting the application', 0.6);
   await runPowerShell(`
@@ -230,7 +261,7 @@ async function uninstall(onStep) {
   `);
 
   onStep?.('Cleaning up', 0.9);
-  await runPowerShell(`Remove-Item -Path ${psQuote(UNINSTALL_KEY)} -Recurse -Force -ErrorAction SilentlyContinue`);
+  await runPowerShell(`Remove-Item -Path ${psQuote(registryKey)} -Recurse -Force -ErrorAction SilentlyContinue`);
 
   onStep?.('Done', 1);
   return { removed: dir };

@@ -2,102 +2,66 @@
 
 A Windows desktop app built from [shineai-9mr.pages.dev](https://shineai-9mr.pages.dev/).
 
-It loads the live Shine site inside a real window and adds exactly three
-things a browser tab cannot do:
+It loads the live Shine site inside a real window and adds only the things a
+browser tab cannot do:
 
-- **Window buttons** - minimise, maximise and close
+- **Window buttons** - minimise, maximise, close
 - **Control PC** - ask Shine to operate your computer, approving every action
 - **Dictation** - the site's own microphone button, made to work
+- **Accounts** - local sign up / sign in, with a profile picture the AI knows
 
-There is no settings panel, no setup wizard and no branding. The icon and the
-window bar are plain text.
+No settings panel, no setup wizard inside the app, no colour, no logo. The icon
+and the window bar are plain text.
 
 ---
 
 ## Install
 
-`release/ShineSetup-1.0.0.exe` is the installer. It installs per-user (no admin
-prompt), creates a desktop and Start Menu shortcut, and uninstalls cleanly.
+Two programs are produced:
 
-To rebuild it:
+| File | What it is |
+| --- | --- |
+| `release-setup/ShineSetup.exe` | The installer. Shows install location and options, installs Shine. |
+| `release/win-unpacked/Shine.exe` | The app itself, installed by ShineSetup. |
+
+`ShineSetup.exe` shows you where it will install and lets you tick:
+
+- create a desktop shortcut
+- create a Start Menu shortcut
+- start Shine when you sign in to Windows
+- open Shine when the install finishes
+
+It registers in *Add or remove programs* and drops an `Uninstall Shine.exe`
+next to the app.
+
+### Build it
 
 ```bash
 npm install
-npm run build
+npm run release
 ```
 
-To run from source:
-
-```bash
-npm start
-```
-
----
-
-## How it is put together
-
-```
-src/main/                Electron main process
-  main.js                lifecycle, IPC, tray, permissions
-  window.js              the frameless window + content loading/fallback
-  preload.js             the only bridge between the page and the desktop layer
-  store.js               JSON settings (settings.json next to the app data)
-  diagnostics.js         renderer introspection for development
-  agent/
-    index.js             the tool-calling loop
-    tools.js             26 tools + their JSON schemas
-    executor.js          actually runs the tools (Node + PowerShell)
-    approvals.js         approval requests, remember rules, activity log
-    guard.js             the destructive-command blocklist
-    providers.js         OpenAI / Anthropic / Gemini request adapters
-  mic/stt.js             dictation engines (Whisper API + offline Vosk)
-
-src/renderer/desktop/    injected into the page's main world
-  desktop.js             window bar, Control PC switch, approval dialog, log,
-                         request routing for chat and dictation
-  desktop.css            all styling
-
-vendor/shine.html        a snapshot of the live site, used as an offline fallback
-test/                    mock provider, drivers, test suites
-scripts/                 icon stamping, screenshot helper
-build/                   icon generator
-```
-
-### Loading the site
-
-The window loads `https://shineai-9mr.pages.dev/` by default. If that request
-fails or hangs, Shine automatically switches to the bundled copy in
-`vendor/shine.html` and shows a toast explaining why. You can force the
-bundled copy from **desktop settings → Load the live Shine site**.
-
-To refresh the bundled snapshot from the live site:
-
-```bash
-Invoke-WebRequest https://shineai-9mr.pages.dev/ -OutFile vendor/shine.html
-```
-
-The desktop layer never patches the site's code. It hooks `window.fetch` in the
-page's world, so if the site changes its internals the app keeps working — the
-desktop features are additive.
+`npm run build` produces the older NSIS-only installer if you just want that.
 
 ---
 
 ## The window bar
 
 ```
-Shine                                    Control PC   Log   —  []  x
+Shine    name    Control PC   Log   |   —  □  x
 ```
 
-- **Control PC** - the on/off switch for PC Control. Toggled from the tray too.
-- **Log** - everything Shine did on this PC, newest first.
-- **minimise / maximise / close** - close quits.
+- **name / Sign in** - opens your account, or signs you in
+- **Control PC** - the on/off switch for PC Control. Also in the tray icon.
+- **Log** - everything Shine did on this PC, newest first
+- **minimise / maximise / close** - plain SVG glyphs, monochrome, and they do
+  not change appearance when you hover them. Close quits.
 
 Double-click the bar to maximise. Drag it to the left or right edge to snap.
-
 There is deliberately no full-screen button, no microphone button (the site has
 one), no settings and no setup wizard.
 
-Turn it on with **Control PC** in the window bar or from the tray icon.
+---
 
 ## Control PC
 
@@ -106,9 +70,9 @@ Turn it on with **Control PC** in the window bar or from the tray icon.
 1. Your message is intercepted on its way to the AI provider.
 2. The request is re-issued from the main process with 26 tools attached.
 3. Read-only tools run immediately. Anything that writes a file, runs a command
-   or changes the system opens an approval dialog in the app.
+   or changes the system opens an approval dialog.
 4. You approve or deny. Results are fed back to the model, which continues.
-5. After `maxSteps` steps (default 8) Shine reports back.
+5. After `maxSteps` steps it reports back.
 
 ### The tools
 
@@ -132,7 +96,7 @@ Turn it on with **Control PC** in the window bar or from the tray icon.
 - **Hard blocklist.** Drive wipes, `Remove-Item -Recurse -Force`, `rm -rf`,
   registry deletion, `format`, shadow-copy deletion, Defender tampering,
   `Invoke-Expression`, piping downloads into shells, creating admin accounts —
-  all refused outright, and the refusal is shown to the model so it can explain
+  refused outright, and the refusal is shown to the model so it can explain
   itself rather than retry.
 - **Critical processes are never killed**, and Shine refuses to kill itself.
 - **Denials are final.** The model is told not to retry or work around a denial.
@@ -144,7 +108,40 @@ Turn it on with **Control PC** in the window bar or from the tray icon.
 - **Audit trail** — every decision lands in `activity-log.json`, viewable under
   **Log**.
 
-The blocklist is enforced in `src/main/agent/guard.js`.
+Enforced in `src/main/agent/guard.js`.
+
+---
+
+## Accounts
+
+Accounts live only on this PC. There is no server, so there is nothing to
+phish and nothing to spoof: **an account only exists once this machine created
+it**, and a made-up username with any password cannot sign in.
+
+- Passwords are stored as **scrypt** hashes with a per-account random salt and
+  are never written in clear.
+- Sign-in verifies the submitted password against that hash in constant time.
+- A missing account and a wrong password take the same amount of time, and
+  give different messages, so neither can be used to probe.
+- **Forgot password** asks the recovery question you chose at sign-up, then lets
+  you set a new one. A wrong answer never reveals whether the account exists.
+
+From the account panel you can change your **name**, your **username**, your
+**password**, and your **profile picture**.
+
+### The AI knows who you are
+
+While you are signed in, every request carries your name and username. If you
+set a profile picture it is attached as an image, so the model can describe it
+or answer "what is my name".
+
+This works for **every** provider - ChatGPT, Claude, Gemini, Groq, OpenRouter,
+Grok and Custom endpoints - because it is attached on the way through the main
+process rather than by special-casing each API. It also works for the site's
+built-in non-AI replies, because the account details are prepended to your
+message while the visible message stays exactly as you typed it.
+
+Sign out and nothing is attached.
 
 ---
 
@@ -158,56 +155,111 @@ without entering a key twice.
 
 If the online request fails and a local Vosk model is present, Shine falls back
 to offline transcription automatically. To enable that: `npm install vosk`, then
-unzip a model into `Documents\Shine\models`. Nothing about your voice leaves
-the machine in that mode.
-
-The transcript is inserted into the chat box; nothing is sent until you press
-send.
+unzip a model into `Documents\Shine\models`.
 
 ---
 
-## Installer
+## Local models and "Failed to fetch"
 
-`npm run build` produces an NSIS installer at `release/ShineSetup-1.0.0.exe`:
+The page is served over `https://`, so the browser refuses any `http://` request
+made from it, and blocks cross-origin ones. A local model on
+`http://localhost:11434/v1` (Ollama, LM Studio, llama.cpp) therefore fails with
+`Failed to fetch` in a browser.
 
-- per-user install (no admin prompt by default)
-- Start Menu and desktop shortcuts
-- proper uninstaller
-- optional install-directory choice
+Every provider request is routed through the main process instead, which has
+neither restriction. Set a **Custom** provider in Shine Settings pointing at
+your local endpoint and it just works.
 
 ---
 
-## Development helpers
+## How it is put together
 
-```bash
-node test/run-tests.js          # guard, executor and schema tests
-node test/mic-tests.js          # dictation tests (needs the mock provider)
-node test/mock-provider.js      # fake OpenAI-compatible provider on :8787
-npm start -- --drive            # drive the app through a scripted agent run
-npm start -- --debug-dump       # dump renderer diagnostics to JSON
+```
+src/main/                Electron main process
+  main.js                lifecycle, IPC, tray, permissions
+  window.js              the frameless window + content loading/fallback
+  preload.js             the only bridge between the page and the desktop layer
+  store.js               PC Control and dictation settings
+  powershell.js          shared PowerShell bridge
+  accounts/index.js      scrypt-hashed local accounts
+  profile.js             builds and attaches the signed-in user's profile
+  agent/
+    index.js             the tool-calling loop
+    tools.js             26 tools + their JSON schemas
+    executor.js          actually runs the tools (Node + PowerShell)
+    approvals.js         approval requests, remember rules, activity log
+    guard.js             the destructive-command blocklist
+    providers.js         OpenAI / Anthropic / Gemini request adapters
+  mic/stt.js             dictation engines (Whisper API + offline Vosk)
+
+src/renderer/desktop/    injected into the page's main world
+  desktop.js             window bar, accounts, approval dialog, log,
+                         request routing for chat and dictation
+  desktop.css            all styling
+
+setup-app/               ShineSetup - the installer, a separate program
+vendor/shine.html        snapshot of the live site, used as an offline fallback
+test/                    mock provider, drivers, test suites
+scripts/                 build, icon stamping, publish, screenshot
+build/                   icon generator
 ```
 
-To exercise the agent end to end without a real key:
+### Loading the site
+
+The window loads `https://shineai-9mr.pages.dev/` by default. If that request
+fails or hangs, Shine automatically switches to the bundled copy in
+`vendor/shine.html`.
+
+To refresh the bundled snapshot:
+
+```bash
+Invoke-WebRequest https://shineai-9mr.pages.dev/ -OutFile vendor/shine.html
+```
+
+The desktop layer never patches the site's code. It hooks `window.fetch` in the
+page's world, so site updates do not break it.
+
+---
+
+## Tests
+
+```bash
+npm test              # guard, executor, tool schemas
+npm run test:accounts # signup/signin/recovery/profile injection
+npm run test:mic      # dictation pipeline (needs the mock provider)
+npm run test:installer # install, re-install and uninstall
+npm run test:all
+```
+
+`test/mock-provider.js` is a fake OpenAI-compatible server on port 8787:
 
 ```bash
 node test/mock-provider.js &
-# in another shell:
 SHINE_TEST_PC=1 npm start -- --drive
 ```
 
-The driver points Shine at the mock, turns PC Control on before the window
-opens, and sends a real message through the real chat path.
+---
+
+## Publishing to GitHub
+
+```powershell
+.\scripts\publish-github.ps1 -RepoName shine-desktop
+```
+
+That installs the GitHub CLI if needed, signs you in, creates the repo, pushes
+the source, and attaches `ShineSetup.exe` to a tagged release.
 
 ---
 
 ## Notes and limits
 
-- API keys are stored in the app's own storage on this machine, in the same
-  `localStorage` the website uses. Nothing is sent anywhere except to the AI
-  provider you configured.
+- API keys are stored on this machine, in the same `localStorage` the website
+  uses. Nothing is sent anywhere except to the AI provider you configured.
+- Accounts are local to this PC. They are not synced and there is no server.
 - `type_text` and `press_keys` inject keystrokes into whatever window has
   focus, so Shine should only use them right after opening the intended window.
 - Provider support for tool calling varies. OpenAI-compatible, Anthropic and
   Gemini shapes are implemented natively; if a provider rejects the `tools`
   parameter, Shine retries once using a text-based protocol.
+- Offline dictation needs the optional `vosk` package.
 - The activity log is local only.

@@ -18,6 +18,7 @@
       "to": "payload/shine-app.zip"
     }
   ],
+  "afterPack": "C:\\Users\\name\\Documents\\Default Project\\scripts\\after-pack.js",
   "win": {
     "target": [
       {
@@ -27,7 +28,8 @@
         ]
       }
     ],
-    "icon": "C:\\Users\\name\\Documents\\Default Project\\build\\icon.ico"
+    "icon": "C:\\Users\\name\\Documents\\Default Project\\build\\icon.ico",
+    "signAndEditExecutable": false
   },
   "portable": {
     "artifactName": "ShineSetup.exe",

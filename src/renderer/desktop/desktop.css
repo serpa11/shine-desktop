@@ -369,6 +369,68 @@ body.shine-light .shine-btn.danger { color: #fff; }
 body.shine-light .shine-tool-summary code { background: rgba(0, 0, 0, 0.06); }
 
 /* --------------------------------------------------------------------------
+   Forms
+   -------------------------------------------------------------------------- */
+
+.shine-field { margin-bottom: 14px; }
+.shine-field:last-child { margin-bottom: 0; }
+
+.shine-field > label,
+.shine-field-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--shine-faint);
+  margin-bottom: 6px;
+}
+
+.shine-input,
+.shine-select,
+.shine-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--shine-surface);
+  border: 1px solid var(--shine-line);
+  border-radius: 8px;
+  color: var(--shine-ink);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 9px 11px;
+  outline: none;
+  transition: border-color 0.14s ease;
+  min-width: 0;
+}
+
+.shine-input:focus,
+.shine-select:focus,
+.shine-textarea:focus { border-color: rgba(255, 255, 255, 0.32); }
+
+body.shine-light .shine-input:focus,
+body.shine-light .shine-select:focus { border-color: rgba(0, 0, 0, 0.3); }
+
+.shine-select option { background: #111; color: #fff; }
+body.shine-light .shine-select option { background: #fff; color: #171717; }
+
+.shine-input::placeholder { color: var(--shine-faint); }
+
+.shine-avatar {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border: 1px solid var(--shine-line);
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--shine-faint);
+  font-size: 11px;
+}
+
+.shine-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* --------------------------------------------------------------------------
    Toasts
    -------------------------------------------------------------------------- */
 

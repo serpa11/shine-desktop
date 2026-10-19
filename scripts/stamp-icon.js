@@ -66,7 +66,8 @@ async function ensureRcedit() {
 
 async function main(appDirOverride) {
   const appDir = appDirOverride || process.env.SHINE_APP_OUT_DIR || path.join(root, 'release', 'win-unpacked');
-  const exePath = path.join(appDir, 'Shine.exe');
+  const exeName = process.env.SHINE_EXE_NAME || 'Shine.exe';
+  const exePath = path.join(appDir, exeName);
   if (!fs.existsSync(exePath)) {
     console.log(`Nothing to stamp: ${exePath} does not exist yet.`);
     return;

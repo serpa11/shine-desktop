@@ -65,9 +65,14 @@ function writeSetupConfig() {
         },
         files: ['src/**/*', 'package.json'],
         extraResources: [{ from: zipPath, to: 'payload/shine-app.zip' }],
+        // Same reason as the main app: the winCodeSign archive ships macOS
+        // symlinks that 7-Zip cannot create without Developer Mode. The icon
+        // is stamped by the afterPack hook instead.
+        afterPack: path.join(root, 'scripts', 'after-pack.js'),
         win: {
           target: [{ target: 'portable', arch: ['x64'] }],
           icon: path.join(root, 'build', 'icon.ico'),
+          signAndEditExecutable: false,
         },
         portable: {
           artifactName: 'ShineSetup.exe',
@@ -95,7 +100,10 @@ function main() {
   console.log('\n=== 3/3 packaging ShineSetup ===');
   writeSetupConfig();
   fs.rmSync(setupOut, { recursive: true, force: true });
+  // The setup app's own executable is named differently to the app's.
+  process.env.SHINE_EXE_NAME = 'ShineSetup.exe';
   run(['--config', setupConfig, '--win', 'portable', '--x64'], root);
+  delete process.env.SHINE_EXE_NAME;
 
   const setupExe = path.join(setupOut, 'ShineSetup.exe');
   if (!fs.existsSync(setupExe)) throw new Error(`Expected ${setupExe} to exist.`);

@@ -566,15 +566,7 @@
       }
 
       var avatarBox = el('div', { style: { display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '6px' } });
-      var avatarImg = el('div', {
-        style: {
-          width: '64px', height: '64px', borderRadius: '50%',
-          border: '1px solid var(--shine-line)', display: 'grid',
-          placeItems: 'center', color: 'var(--shine-faint)', fontSize: '11px',
-          overflow: 'hidden', flex: 'none',
-        },
-        text: 'none',
-      });
+      var avatarImg = el('div', { class: 'shine-avatar', text: 'none' });
       avatarBox.appendChild(avatarImg);
 
       var avatarButtons = el('div', { style: { display: 'flex', gap: '8px' } }, [
