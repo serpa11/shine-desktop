@@ -24,6 +24,7 @@ const runState = {
 // call is now bounded, and the run as a whole has its own ceiling.
 const PROVIDER_TIMEOUT_MS = 90000;
 const RUN_TIMEOUT_MS = 6 * 60 * 1000;
+const MAX_STEPS = 30;
 
 /** A signal that aborts on timeout as well as on the caller's own signal. */
 function withTimeout(external, ms) {
@@ -52,7 +53,7 @@ function status() {
     plan: runState.currentPlan,
     error: runState.lastError,
     allowlist: store.getValue('pcControl', 'allowlist', []) || [],
-    maxSteps: store.getValue('pcControl', 'maxSteps', 8),
+    maxSteps: MAX_STEPS,
     dangerMode: store.getValue('pcControl', 'dangerMode', false),
   };
 }
@@ -86,6 +87,11 @@ function buildSystemPrompt(extraContext = '') {
 - If the user asks to switch Windows between dark mode and light mode, call set_appearance with theme "dark", "light" or "system". The same tool turns transparency and animations on and off. It applies immediately.
 - If the user names an app to open ("open spotify", "launch notepad", "run chrome"), call launch_app with the name they used. It searches the Start Menu, the App Paths registry and Program Files, so it finds programs that are not on PATH.
 - If launch_app cannot find something, call find_applications to show the user what is actually installed, and offer those names rather than guessing.
+
+# Long tasks
+- You have up to ${MAX_STEPS} steps for one request. Long jobs are fine, but check progress after each step and stop if something is not going as expected.
+- Prefer an application's own command line tool over clicking through its interface when one exists. vmrun.exe ships with VMware Workstation and can create a virtual machine in a single step, which is far more reliable than driving the New Virtual Machine wizard with mouse clicks.
+- When you do click, screenshot before and after each click so you can see what actually happened.
 
 # Changing Windows settings
 - The user can ask for any Windows setting by name: appearance, accessibility, or experimental feature flags. Call list_windows_settings to find the exact setting name and see its current value, then change_windows_setting with that name and true or false.
@@ -183,7 +189,11 @@ async function run(win, request, { signal } = {}) {
   const wholeRun = withTimeout(signal, RUN_TIMEOUT_MS);
   const budget = wholeRun.signal;
 
-  const maxSteps = Math.max(1, Math.min(20, Number(store.getValue('pcControl', 'maxSteps', 8)) || 8));
+  // Long enough to finish a multi-step task such as driving a wizard, and not
+  // configurable: there is no settings panel, so a value left over from an
+  // older build would otherwise quietly cap every task at the old limit.
+  // The ceiling is what stops a confused model looping forever.
+  const maxSteps = MAX_STEPS;
   const dangerMode = store.getValue('pcControl', 'dangerMode', false) === true;
 
   const profileImages = await buildProfileImages();
