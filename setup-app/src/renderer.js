@@ -20,12 +20,24 @@ function show(name) {
   pages[name].classList.add('show');
 }
 
-function setFooter({ cancel, next, nextDisabled }) {
+/**
+ * The footer is the same set of actions wherever you are:
+ *   Install Shine Desktop  - fresh install over the chosen folder
+ *   Repair Installation    - restore program files, keep your account
+ *   Uninstall              - offered only when this is the uninstaller
+ */
+function setFooter({ cancel, install, repair, uninstall, disabled } = {}) {
   $('btnCancel').style.display = cancel === false ? 'none' : '';
-  $('btnNext').style.display = next === false ? 'none' : '';
-  $('btnNext').textContent = next || 'Next';
-  $('btnNext').disabled = Boolean(nextDisabled);
+  $('btnNext').style.display = install === false ? 'none' : '';
+  $('btnNext').textContent = install || 'Install Shine Desktop';
+  $('btnRepair').style.display = repair === false ? 'none' : '';
+  $('btnUninstall').style.display = uninstall === false ? 'none' : '';
+  $('btnNext').disabled = Boolean(disabled);
+  $('btnRepair').disabled = Boolean(disabled);
+  $('btnUninstall').disabled = Boolean(disabled);
 }
+
+const BUSY_FOOTER = { cancel: false, install: false, repair: false, uninstall: false };
 
 /* ------------------------------------------------------------------ */
 
@@ -35,7 +47,9 @@ async function init() {
   $('btnMin').addEventListener('click', () => window.setup.minimize());
   $('btnQuit').addEventListener('click', () => window.setup.quit());
   $('btnCancel').addEventListener('click', onCancel);
-  $('btnNext').addEventListener('click', onNext);
+  $('btnNext').addEventListener('click', onInstall);
+  $('btnRepair').addEventListener('click', onRepair);
+  $('btnUninstall').addEventListener('click', onUninstall);
   $('btnBrowse').addEventListener('click', onBrowse);
   $('installDir').addEventListener('input', refreshDiskHint);
 
@@ -44,34 +58,33 @@ async function init() {
     $('progressFill').style.width = `${Math.round(progress * 100)}%`;
   });
 
-  if (state.mode === 'uninstall') {
+  // Both windows offer the same three choices; the uninstaller adds Uninstall.
+  const isUninstaller = state.mode === 'uninstall';
+  $('installDir').value = state.previous || state.defaultDir;
+  await refreshDiskHint();
+
+  if (isUninstaller) {
     $('barTitle').textContent = 'Uninstall Shine';
     $('introTitle').textContent = 'Uninstall Shine';
     $('introText').textContent = state.previous
-      ? `Shine is installed in ${state.previous}. This removes the app and its shortcuts. Your chats and account stay on this PC.`
-      : 'Shine does not appear to be installed. You can still run this to clean up leftover shortcuts.';
-    $('btnNext').textContent = 'Uninstall';
-    show('intro');
-    setFooter({});
-    return;
+      ? `Shine is installed in ${state.previous}. Uninstalling removes the app and its shortcuts; your chats and account stay on this PC. Repairing puts the program files back if any are missing, and leaves your account alone.`
+      : 'Shine does not appear to be installed. You can still run this to clean up leftover shortcuts, or repair an installation to restore it.';
+  } else {
+    $('introTitle').textContent = 'Shine Setup';
+    $('introText').textContent = state.previous
+      ? `Shine will be installed into ${state.previous}, replacing the existing copy.`
+      : 'Shine will be installed on this PC.';
   }
 
-  $('introTitle').textContent = 'Shine Setup';
-  $('introText').textContent = state.previous
-    ? `Shine will be installed into ${state.previous}, replacing the existing copy.`
-    : 'Shine will be installed on this PC.';
-
-  $('installDir').value = state.previous || state.defaultDir;
-  await refreshDiskHint();
   show('intro');
-  setFooter({});
+  setFooter({ uninstall: isUninstaller ? 'Uninstall' : false });
 
   // Development aid: open straight onto a page, e.g. ?page=options
   const startPage = new URLSearchParams(location.search).get('page');
   if (startPage === 'options' || startPage === 'done') {
     stage = 'options';
     show('options');
-    setFooter({ next: 'Install' });
+    setFooter({ cancel: 'Back', repair: false });
   }
 }
 
@@ -100,13 +113,12 @@ async function onBrowse() {
   await refreshDiskHint();
 }
 
-async function onNext() {
+async function onInstall() {
   if (busy) return;
 
   if (stage === 'intro') {
-    if (state.mode === 'uninstall') return runUninstall();
     show('options');
-    setFooter({ next: 'Install' });
+    setFooter({ cancel: 'Back', repair: false });
     stage = 'options';
     return;
   }
@@ -120,11 +132,56 @@ async function onNext() {
   if (stage === 'done') window.setup.quit();
 }
 
+/** Repairs in place - keeps the account, chats and every setting. */
+async function onRepair() {
+  if (busy) return;
+  if (stage === 'progress') return;
+
+  const target = $('installDir').value.trim() || state.previous || state.defaultDir;
+
+  busy = true;
+  stage = 'progress';
+  show('progress');
+  $('progressTitle').textContent = 'Repairing Shine';
+  $('progressStep').textContent = 'Checking the installation...';
+  $('progressFill').style.width = '0%';
+  setFooter(BUSY_FOOTER);
+
+  try {
+    const result = await window.setup.repair({
+      installDir: target,
+      desktopShortcut: $('optDesktop').checked,
+      startMenuShortcut: $('optStartMenu').checked,
+      runAtStartup: $('optStartup').checked,
+    });
+
+    $('progressFill').style.width = '100%';
+    stage = 'done';
+    $('doneTitle').textContent = 'Shine has been repaired';
+    $('doneText').textContent = result.wasBroken
+      ? `Restored into ${result.installDir}. Missing again: ${result.missing.join(', ')}. Your account and chats were left alone.`
+      : `Reinstalled cleanly into ${result.installDir}. Your account and chats were left alone.`;
+    show('done');
+    setFooter({ cancel: false, install: 'Finish', repair: false, uninstall: false });
+  } catch (err) {
+    busy = false;
+    stage = 'intro';
+    show('intro');
+    setFooter({ uninstall: state.mode === 'uninstall' ? 'Uninstall' : false });
+    $('introText').textContent = `Repair failed: ${err.message}`;
+  }
+}
+
+async function onUninstall() {
+  if (busy) return;
+  return runUninstall();
+}
+
 async function onCancel() {
   if (stage === 'progress') return; // never interrupt mid-install
   if (stage === 'intro') return window.setup.quit();
   show('intro');
-  setFooter({});
+  setFooter({ uninstall: state.mode === 'uninstall' ? 'Uninstall' : false });
   stage = 'intro';
 }
 
@@ -137,7 +194,7 @@ async function runInstall() {
   $('progressTitle').textContent = 'Installing Shine';
   $('progressStep').textContent = 'Preparing...';
   $('progressFill').style.width = '0%';
-  setFooter({ cancel: false, next: false });
+  setFooter(BUSY_FOOTER);
 
   try {
     const result = await window.setup.install({
@@ -152,7 +209,7 @@ async function runInstall() {
     $('doneTitle').textContent = 'Shine is installed';
     $('doneText').textContent = `Installed into ${result.installDir}.`;
     show('done');
-    setFooter({ cancel: false, next: $('optLaunch').checked ? 'Open Shine' : 'Finish' });
+    setFooter({ cancel: false, install: $('optLaunch').checked ? 'Open Shine' : 'Finish', repair: false, uninstall: false });
 
     if ($('optLaunch').checked) {
       $('btnNext').addEventListener(
@@ -165,7 +222,7 @@ async function runInstall() {
     busy = false;
     stage = 'options';
     show('options');
-    setFooter({ next: 'Install' });
+    setFooter({ cancel: 'Back', repair: false });
     $('diskHint').textContent = `Install failed: ${err.message}`;
   }
 }
@@ -177,20 +234,27 @@ async function runUninstall() {
   $('progressTitle').textContent = 'Uninstalling Shine';
   $('progressStep').textContent = 'Preparing...';
   $('progressFill').style.width = '0%';
-  setFooter({ cancel: false, next: false });
+  setFooter(BUSY_FOOTER);
 
   try {
-    await window.setup.uninstall();
+    const result = await window.setup.uninstall();
     stage = 'done';
-    $('doneTitle').textContent = 'Shine has been uninstalled';
-    $('doneText').textContent = 'The application and its shortcuts were removed. Your account and chats were left alone.';
+    if (result && result.complete === false) {
+      // The folder is deleted by a helper once this window closes, because
+      // Windows will not let a running program delete itself.
+      $('doneTitle').textContent = 'Shine has been uninstalled';
+      $('doneText').textContent = result.message;
+    } else {
+      $('doneTitle').textContent = 'Shine has been uninstalled';
+      $('doneText').textContent = 'The application and its shortcuts were removed. Your account and chats were left alone.';
+    }
     show('done');
-    setFooter({ cancel: false, next: 'Finish' });
+    setFooter({ cancel: false, install: 'Finish', repair: false, uninstall: false });
   } catch (err) {
     busy = false;
     stage = 'intro';
     show('intro');
-    setFooter({});
+    setFooter({ uninstall: 'Uninstall' });
     $('introText').textContent = `Uninstall failed: ${err.message}`;
   }
 }

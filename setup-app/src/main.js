@@ -6,6 +6,42 @@ const installer = require('./installer');
 
 const isUninstall = process.argv.includes('--uninstall');
 
+/**
+ * Silent install/uninstall, for scripting and for the end-to-end test.
+ *
+ * Without this there is no way to exercise the real installer as a separate
+ * process, and the round trip "install then uninstall" is exactly where the
+ * bugs live: an uninstaller that cannot delete itself, or one that was never
+ * written at all.
+ */
+async function runSilent() {
+  try {
+    const dirIndex = process.argv.indexOf('--install-dir');
+    const installDir = dirIndex !== -1 ? process.argv[dirIndex + 1] : undefined;
+    const shortcuts = process.argv.includes('--shortcuts');
+    const options = {
+      installDir,
+      desktopShortcut: shortcuts,
+      startMenuShortcut: shortcuts,
+      runAtStartup: false,
+    };
+
+    let result;
+    if (isUninstall) {
+      result = await installer.uninstall();
+    } else if (process.argv.includes('--repair')) {
+      result = await installer.repair(options);
+    } else {
+      result = await installer.install(options);
+    }
+    console.log(`SHINE_RESULT ${JSON.stringify({ ok: true, ...result })}`);
+    app.exit(0);
+  } catch (err) {
+    console.error(`SHINE_ERROR ${(err && err.message) || err}`);
+    app.exit(1);
+  }
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 660,
@@ -54,6 +90,13 @@ function registerIpc() {
     });
   });
 
+  ipcMain.handle('setup:repair', async (event, options) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return installer.repair(options, (step, progress) => {
+      win.webContents.send('setup:progress', { step, progress });
+    });
+  });
+
   ipcMain.handle('setup:uninstall', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     return installer.uninstall((step, progress) => {
@@ -77,6 +120,12 @@ function registerIpc() {
 
 app.whenReady().then(() => {
   app.setAppUserModelId('com.shine.desktop.setup');
+
+  if (process.argv.includes('--silent')) {
+    runSilent();
+    return;
+  }
+
   registerIpc();
   const win = createWindow();
   app.on('window-all-closed', () => app.quit());

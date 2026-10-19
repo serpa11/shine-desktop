@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('setup', {
   chooseDir: () => ipcRenderer.invoke('setup:choose-dir'),
   checkDisk: (dir) => ipcRenderer.invoke('setup:check-disk', dir),
   install: (options) => ipcRenderer.invoke('setup:install', options),
+  repair: (options) => ipcRenderer.invoke('setup:repair', options),
   uninstall: () => ipcRenderer.invoke('setup:uninstall'),
   launch: (exe) => ipcRenderer.invoke('setup:launch', exe),
   quit: () => ipcRenderer.invoke('setup:quit'),

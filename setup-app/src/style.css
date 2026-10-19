@@ -174,3 +174,22 @@ body {
 }
 
 .btn.ghost:hover:not(:disabled) { background: var(--surface-2); }
+
+/* Uninstall is offered alongside install and repair on the same screen, so it
+   is set apart by its label and an outlined edge rather than a filled bar -
+   the setup window stays monochrome. */
+.btn.danger {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: var(--ink);
+  color: #08080a;
+}
+
+/* Three actions plus Cancel do not fit across a 660px window at this size. */
+@media (max-width: 700px) {
+  .foot { gap: 8px; padding: 14px 24px 18px; }
+  .btn { padding: 8px 12px; font-size: 12.5px; }
+}

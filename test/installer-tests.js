@@ -91,6 +91,34 @@ function check(name, condition, detail) {
   check('re-install still works', installer.isInstalled(dir));
   check('startup entry removed when unchecked', !fs.existsSync(startupLink));
 
+  console.log('\nRepairing');
+  // Break the install the way it actually broke for a user: the root-level
+  // binaries vanish (including the uninstaller) while the folders below
+  // survive, which is what a half-finished extraction leaves behind.
+  fs.rmSync(path.join(dir, 'Shine.exe'), { force: true });
+  fs.rmSync(path.join(dir, 'Uninstall Shine.exe'), { force: true });
+  fs.rmSync(path.join(dir, 'resources'), { recursive: true, force: true });
+  check('damage is detected', !(await installer.verifyInstall(dir)).ok);
+
+  const repair = await installer.repair({ installDir: dir, desktopShortcut: true, startMenuShortcut: true, runAtStartup: false });
+  check('repair reports the install was broken', repair.wasBroken === true);
+  check('repair lists what was missing', Array.isArray(repair.missing) && repair.missing.length > 0, String(repair.missing));
+  check('repair restores Shine.exe', fs.existsSync(path.join(dir, 'Shine.exe')));
+  check('repair restores the payload', fs.existsSync(path.join(dir, 'resources', 'app.asar')));
+  check('repair restores the uninstaller', fs.existsSync(path.join(dir, 'Uninstall Shine.exe')));
+  check('repair re-registers the uninstall entry', (await installer.previousInstall()) === dir);
+  check('repair restores the shortcuts', fs.existsSync(desktopLink) && fs.existsSync(startLink));
+  check('repair leaves the folder verified', (await installer.verifyInstall(dir)).ok);
+
+  // A repair with nothing wrong should still succeed quietly.
+  const second = await installer.repair({ installDir: dir, desktopShortcut: true, startMenuShortcut: true, runAtStartup: false });
+  check('repairing a healthy install is a no-op success', second.wasBroken === false);
+
+  // Repair must work with no options at all, which is how the button behaves
+  // when it is pressed straight from the first screen.
+  const third = await installer.repair({});
+  check('repair works with no options', (await installer.verifyInstall(third.installDir)).ok);
+
   console.log('\nUninstalling');
   await installer.uninstall();
   check('removes the app', !fs.existsSync(dir));
