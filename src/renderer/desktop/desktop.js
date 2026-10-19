@@ -253,20 +253,35 @@
   }
 
   /** Wait until Shine has rendered the assistant reply, then hand back its node. */
+  /**
+   * Runs a callback against the message the site is about to render for this
+   * reply, so screenshots and the tool summary attach to the right answer.
+   *
+   * The reply is matched by its text. When no match turns up, the fallback
+   * used to be "the last assistant message", which attached a second copy of
+   * the summary to whichever reply happened to be there - so one tool list
+   * appeared under the message it belonged to and again under the one above.
+   * Attaching to a message whose text does not match would misfile it just as
+   * badly, so nothing is attached at all.
+   */
   function afterAssistantReply(answerText, callback) {
     var convo = document.querySelector('.conversation');
     if (!convo) return;
-    var needle = String(answerText || '').slice(0, 40);
+    var needle = String(answerText || '').trim().slice(0, 40);
+    if (!needle) return;
+    var seen = 0;
     var deadline = Date.now() + 8000;
     (function poll() {
       var nodes = Array.prototype.slice.call(convo.querySelectorAll('.message.assistant'));
-      var match = null;
       for (var i = nodes.length - 1; i >= 0; i -= 1) {
         if (nodes[i].classList.contains('shine-desktop-note')) continue;
-        if ((nodes[i].innerText || '').indexOf(needle) === 0) { match = nodes[i]; break; }
+        if ((nodes[i].innerText || '').trim().indexOf(needle) === 0) { callback(nodes[i]); return; }
       }
-      if (match) { callback(match); return; }
-      if (Date.now() > deadline) { if (nodes.length) callback(nodes[nodes.length - 1]); return; }
+      if (Date.now() > deadline) {
+        console.warn('[shine-desktop] could not find the reply to attach to:', needle);
+        return;
+      }
+      seen += 1;
       setTimeout(poll, 120);
     })();
   }

@@ -19,6 +19,18 @@ function wait(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Set by run(), so a failed run can still put the user's settings back.
+let restoreOnExit = null;
+
+/** Hands the user's provider settings back. Safe to call more than once. */
+async function restoreSettings() {
+  if (!restoreOnExit) return false;
+  const fn = restoreOnExit;
+  restoreOnExit = null;
+  await fn();
+  return true;
+}
+
 const CONFIGURE = `(() => {
   const s = JSON.parse(localStorage.getItem('shineAISettings') || '{}');
   s.custom = Object.assign({}, s.custom, {
@@ -33,6 +45,14 @@ const CONFIGURE = `(() => {
   return JSON.stringify(s.activeProvider);
 })()`;
 
+/**
+ * Points the provider settings at the mock, and puts them back afterwards.
+ *
+ * The app and the dev run share %APPDATA%\Shine, localStorage included, so
+ * writing the mock's URL and key here overwrote the settings the user's
+ * installed app reads. That made Shine talk to a fake server and answer with
+ * this script's canned replies.
+ */
 async function run(win, dump) {
   const result = { steps: [] };
 
@@ -44,6 +64,25 @@ async function run(win, dump) {
     if (ready) break;
     await wait(400);
   }
+
+  // Whatever is there now belongs to the user. Put it back at the end, and
+  // again on the way out if the run fails partway.
+  const saved = await win.webContents.executeJavaScript(`localStorage.getItem('shineAISettings')`, true);
+  result.savedSettings = saved ? 'captured' : 'none';
+
+  const writeBack = async () => {
+    await win.webContents
+      .executeJavaScript(
+        saved
+          ? `localStorage.setItem('shineAISettings', ${JSON.stringify(saved)})`
+          : `localStorage.removeItem('shineAISettings')`,
+        true
+      )
+      .catch(() => {});
+    console.log('provider settings restored');
+  };
+  const restore = writeBack;
+  restoreOnExit = writeBack;
 
   const provider = await win.webContents.executeJavaScript(CONFIGURE, true);
   result.provider = provider;
@@ -95,6 +134,7 @@ async function run(win, dump) {
   console.log('agent run:', outcome);
 
   await win.webContents.executeJavaScript(`window.shineDesktop.pc.setEnabled(false)`, true);
+  await restore();
 
   fs.writeFileSync(dump, JSON.stringify(result, null, 2), 'utf8');
 
@@ -105,4 +145,4 @@ async function run(win, dump) {
   return passed;
 }
 
-module.exports = { run, wait };
+module.exports = { run, wait, restoreSettings };

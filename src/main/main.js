@@ -317,6 +317,12 @@ app.whenReady().then(() => {
       })
       .catch((err) => {
         console.error('pc driver failed:', err);
+        // Hand back whatever it overwrote on the way through, even if the
+        // run blew up halfway - otherwise the user's provider settings stay
+        // pointed at the mock.
+        try {
+          require('../../test/pc-driver').restoreSettings();
+        } catch {}
         app.exit(1);
       });
   }
