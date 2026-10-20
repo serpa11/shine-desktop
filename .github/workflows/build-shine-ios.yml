@@ -1,0 +1,53 @@
+name: Build Shine iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "ios/ShineMobile/**"
+      - ".github/workflows/build-shine-ios.yml"
+
+jobs:
+  build-ios-ipa:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes | head -20 || true
+
+      - name: Build unsigned ShineMobile.app
+        working-directory: ios/ShineMobile
+        run: |
+          set -euo pipefail
+          rm -rf DerivedData Payload ShineMobile.ipa
+          xcodebuild \
+            -project ShineMobile.xcodeproj \
+            -target ShineMobile \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath DerivedData \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+          APP_PATH=$(find DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -type d -name "ShineMobile.app" | head -1)
+          test -n "$APP_PATH"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry ShineMobile.ipa Payload
+          unzip -l ShineMobile.ipa | head -40
+
+      - name: Upload ShineMobile.ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShineMobile-ipa
+          path: ios/ShineMobile/ShineMobile.ipa
+          if-no-files-found: error
