@@ -431,6 +431,139 @@
   })();
 
   /* ======================================================================
+     Shine's own scrollbar
+
+     The scrollbar belongs to the window, not to the OS: the native one is
+     hidden and the app draws the rail, the track and the thumb itself.
+
+     The site already builds a `.shine-own-scroll` rail, but it only reveals
+     that rail while the pointer hugs the right edge. So the app retires the
+     site's window rail and draws its own, always visible, starting below the
+     window bar. The site's rails for its overlay panels are left alone and
+     only picked up by the stylesheet.
+     ====================================================================== */
+
+  var Scrollbar = (function () {
+    var MAIN_CLASS = 'shine-own-scroll-main';
+    var OFF_CLASS = 'shine-own-scroll-off';
+    var rail = null;
+    var track = null;
+    var thumb = null;
+    var raf = 0;
+    var drag = null;
+
+    function supported() {
+      return typeof window.matchMedia === 'function' && window.matchMedia('(pointer: fine)').matches;
+    }
+
+    /* The window bar sits over the top of the page, so the rail starts under it. */
+    function barHeight() {
+      var bar = document.querySelector('.shine-titlebar');
+      return bar ? bar.getBoundingClientRect().height : 38;
+    }
+
+    /* The site appends its window rail to the body first and pins it to the
+       right edge; ours replaces it, so the first one it created is retired. */
+    function retireSiteRail() {
+      var site = document.querySelector('.shine-own-scroll:not(.shine-own-scroll-main)');
+      if (site && site !== rail && !site.classList.contains(OFF_CLASS)) site.classList.add(OFF_CLASS);
+    }
+
+    function build() {
+      if (rail && rail.isConnected) return;
+      track = el('div', { class: 'shine-own-scroll-track' });
+      thumb = el('div', { class: 'shine-own-scroll-thumb' });
+      track.appendChild(thumb);
+      rail = el('div', { class: 'shine-own-scroll ' + MAIN_CLASS, 'aria-hidden': 'true' });
+      rail.appendChild(track);
+      document.body.appendChild(rail);
+      bindDrag();
+    }
+
+    function metrics() {
+      var root = document.scrollingElement || document.documentElement;
+      var viewport = window.innerHeight;
+      var total = Math.max(root.scrollHeight, document.body ? document.body.scrollHeight : 0);
+      var top = window.scrollY || root.scrollTop || 0;
+      return { viewport: viewport, total: total, top: top, max: Math.max(0, total - viewport) };
+    }
+
+    function update() {
+      raf = 0;
+      if (!document.body) return;
+      build();
+      var m = metrics();
+      var upper = barHeight() + 8;
+      var height = Math.max(0, window.innerHeight - upper - 8);
+      var visible = m.max > 3 && m.viewport > 80 && height > 60;
+      rail.style.display = visible ? 'block' : 'none';
+      if (!visible) return;
+      rail.style.top = upper + 'px';
+      rail.style.height = height + 'px';
+      rail.style.left = Math.max(2, window.innerWidth - 15) + 'px';
+      var th = Math.max(35, Math.min(height, (height * m.viewport) / m.total));
+      thumb.style.height = th + 'px';
+      thumb.style.transform = 'translateY(' + ((height - th) * m.top) / Math.max(1, m.max) + 'px)';
+    }
+
+    function schedule() {
+      if (!raf) raf = requestAnimationFrame(update);
+    }
+
+    function moveTo(clientY) {
+      var m = metrics();
+      var h = rail.clientHeight;
+      var th = thumb.offsetHeight;
+      var top = rail.getBoundingClientRect().top;
+      var progress = Math.max(0, Math.min(1, (clientY - top - drag.offset) / Math.max(1, h - th)));
+      window.scrollTo(0, progress * m.max);
+      schedule();
+    }
+
+    function bindDrag() {
+      track.addEventListener('pointerdown', function (e) {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        e.preventDefault();
+        var th = thumb.offsetHeight;
+        var thumbRect = thumb.getBoundingClientRect();
+        var grabbed = e.clientY >= thumbRect.top && e.clientY <= thumbRect.bottom;
+        drag = { id: e.pointerId, offset: grabbed ? e.clientY - thumbRect.top : th / 2 };
+        track.setPointerCapture(e.pointerId);
+        moveTo(e.clientY);
+      });
+
+      track.addEventListener('pointermove', function (e) {
+        if (!drag || e.pointerId !== drag.id) return;
+        e.preventDefault();
+        moveTo(e.clientY);
+      });
+
+      ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (name) {
+        track.addEventListener(name, function () { drag = null; schedule(); });
+      });
+    }
+
+    function install() {
+      if (!supported()) return;
+      if (!document.body) {
+        document.addEventListener('DOMContentLoaded', install, { once: true });
+        return;
+      }
+      retireSiteRail();
+      build();
+      window.addEventListener('scroll', schedule, { passive: true });
+      window.addEventListener('resize', schedule, { passive: true });
+      // The page grows and shrinks as it loads, and panels mount their own
+      // rails, so the state is re-checked rather than trusted once.
+      window.setInterval(function () { retireSiteRail(); schedule(); }, 900);
+      schedule();
+    }
+
+    return { install: install, refresh: schedule };
+  })();
+
+  /* ======================================================================
      Accounts
      ====================================================================== */
 
@@ -991,6 +1124,35 @@
       return null;
     }
 
+    /**
+     * The model that ships with the Shine site itself, behind /api/chat.
+     *
+     * Shine no longer uses API keys, so this is the provider a normal setup
+     * has. It is deliberately not part of matchProvider: when PC Control is
+     * off the site's own chat must reach that endpoint untouched, because it
+     * streams and the main-process proxy does not. It is only recognised here,
+     * so PC Control can take the same request over.
+     */
+    function isSiteOwnChat(url) {
+      return /\/api\/chat(\?|$)/i.test(String(url || ''));
+    }
+
+    /**
+     * Absolute address of the site's model.
+     *
+     * The site posts to the relative path /api/chat. That resolves against
+     * whatever page is loaded - the live site normally, but the bundled
+     * fallback when it is opened as a file, where there is no origin to speak
+     * of. The main process needs a real URL either way, so a file:// page
+     * falls back to the deployed site.
+     */
+    function siteChatEndpoint(url) {
+      if (/^https?:/i.test(url)) return url;
+      var origin = String(location.origin || '');
+      if (/^https?:/i.test(origin)) return origin + (url.charAt(0) === '/' ? url : '/' + url);
+      return 'https://shineai-9mr.pages.dev/api/chat';
+    }
+
     function headerValue(headers, name) {
       if (!headers) return '';
       try {
@@ -1065,7 +1227,10 @@
 
     async function chat(input, init) {
       var url = typeof input === 'string' ? input : (input && input.url) || '';
-      var provider = matchProvider(url);
+      // The site's own model needs no key and no model name, so it is matched
+      // separately from the providers that do.
+      var siteChat = isSiteOwnChat(url);
+      var provider = siteChat ? 'shine' : matchProvider(url);
       if (!provider || !state.enabled) return null;
 
       var method = ((init && init.method) || 'GET').toUpperCase();
@@ -1092,7 +1257,9 @@
           /* noop */
         }
       }
-      if (!key) return null;
+      // The site's own model is keyless - requiring a key here is what left
+      // PC Control with nothing to send.
+      if (!key && !siteChat) return null;
 
       var query = textFromBody(provider, body);
       if (!query) return null;
@@ -1102,7 +1269,7 @@
         var m = /models\/([^:]+):generateContent/i.exec(url);
         model = m ? decodeURIComponent(m[1]) : '';
       }
-      if (!model) return null;
+      if (!model && !siteChat) return null;
 
       var ai = ShineStore.ai();
 
@@ -1112,11 +1279,15 @@
           provider: provider,
           model: model,
           apiKey: key,
-          baseUrl: provider === 'custom' ? ai.custom?.baseUrl : '',
+          // The site's model is addressed by the endpoint itself rather than
+          // by a base URL plus a model name.
+          baseUrl: siteChat ? siteChatEndpoint(url) : provider === 'custom' ? ai.custom?.baseUrl : '',
           authStyle: provider === 'custom' ? ai.custom?.authStyle || 'bearer' : 'bearer',
           query: query,
           history: readHistory(8).filter(function (turn) { return turn.text !== query; }),
-          systemContext: 'The active AI provider is ' + provider + '.',
+          systemContext: siteChat
+            ? 'You are talking to the model built into the Shine site. It needs no API key.'
+            : 'The active AI provider is ' + provider + '.',
         });
 
         if (!result || !result.ok) {
@@ -1199,28 +1370,34 @@
         return;
       }
 
+      // Shine no longer uses API keys: the site runs its own model, and that
+      // is what PC Control drives when no provider is configured. So there is
+      // nothing to ask the user for here - an API key used to be demanded
+      // before this switch would move at all, which is why it would not turn
+      // on.
+      //
+      // A provider the user did configure is still checked, because not every
+      // one of them can carry a tool-calling loop.
       var ai = ShineStore.ai();
-      if (!ai.activeProvider) {
-        ToastHost.block(
-          'PC Control needs an AI provider',
-          'Control PC was not switched on. Open Shine Settings, choose a provider and paste your API key, then press Control PC again.'
-        );
-        return;
-      }
-
-      var supported = await D.pc.isSupportedProvider(ai.activeProvider);
-      if (!supported.supported) {
-        ToastHost.block(
-          'That provider cannot drive the PC',
-          '"' + ai.activeProvider + '" is not supported. Use ChatGPT, Claude, Gemini, Groq, OpenRouter, Grok or a Custom endpoint, then press Control PC again.'
-        );
-        return;
+      if (ai.activeProvider) {
+        var supported = await D.pc.isSupportedProvider(ai.activeProvider);
+        if (!supported.supported) {
+          ToastHost.block(
+            'That provider cannot drive the PC',
+            '"' + ai.activeProvider + '" is not supported. Use ChatGPT, Claude, Gemini, Groq, OpenRouter, Grok or a Custom endpoint, then press Control PC again.'
+          );
+          return;
+        }
       }
 
       state.enabled = true;
       Titlebar.setPcState(true);
       await D.pc.setEnabled(true);
-      ToastHost.show('Control PC is on', 'Shine will ask before every action.', 4000);
+      ToastHost.show(
+        'Control PC is on',
+        ai.activeProvider ? 'Shine will ask before every action.' : 'Using the model built into Shine - no API key needed. Shine will ask before every action.',
+        4000
+      );
     }
 
     function applyStatus(status) {
@@ -1252,6 +1429,11 @@
     function shouldHandle(input) {
       var url = typeof input === 'string' ? input : (input && input.url) || '';
       if (/\/audio\/transcriptions/i.test(url)) return true;
+      // The site's own model is only worth touching while PC Control is on.
+      // When it is off, the request has to reach /api/chat untouched so the
+      // site's normal streaming chat keeps working exactly as it does in a
+      // browser.
+      if (isSiteOwnChat(url)) return state.enabled;
       if (!matchProvider(url)) return false;
       if (/\/(images|audio)\//i.test(url)) return false;
       // A local or custom http:// provider cannot be reached from an https
@@ -1266,6 +1448,10 @@
 
       // PC Control takes over when it is on.
       if (state.enabled) return chat(input, init);
+
+      // The site's own model is never proxied - it is same-origin already and
+      // it streams, which the main-process proxy does not do.
+      if (isSiteOwnChat(url)) return null;
 
       // Otherwise every provider request goes through the main process. That
       // removes CORS and mixed-content walls (so local models work) and is
@@ -1497,6 +1683,9 @@
      ====================================================================== */
 
   async function start() {
+    // Shine's scrollbar is independent of the site, so it goes up first.
+    Scrollbar.install();
+
     // Wait for the Shine UI so the offsets land in the right place.
     for (var i = 0; i < 60; i += 1) {
       if (document.querySelector('.composer-wrap textarea, #prompt, textarea')) break;
@@ -1557,6 +1746,7 @@
     agent: Agent,
     log: Log,
     account: Account,
+    scrollbar: Scrollbar,
     installProfileInterception: installProfileInterception,
   };
   window.__shineDesktopUi = true;

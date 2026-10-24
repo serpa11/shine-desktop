@@ -23,6 +23,17 @@ GestaltEdit/
 ipa_extract/
 whoisbaklavakings/
 
+# Android build artifacts and signing secrets
+android/ShineMobile/.gradle/
+android/ShineMobile/build/
+android/ShineMobile/app/build/
+android/ShineMobile/local.properties
+android/ShineMobile/keystore.properties
+android/*.keystore
+
+# Scratch space for previews and throwaway output
+scratch/
+
 # OS noise
 .DS_Store
 Thumbs.db

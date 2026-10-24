@@ -153,7 +153,9 @@ function registerIpc() {
   });
 
   ipcMain.handle('pc:provider-supported', (_e, { provider }) => {
-    const supported = new Set(['openai', 'claude', 'gemini', 'groq', 'openrouter', 'grok', 'bazaarlink', 'custom']);
+    // 'shine' is the model built into the site. It is keyless and drives the
+    // agent through the text protocol, so it belongs in this list too.
+    const supported = new Set(['shine', 'openai', 'claude', 'gemini', 'groq', 'openrouter', 'grok', 'bazaarlink', 'custom']);
     return { supported: supported.has(String(provider || '')) };
   });
 

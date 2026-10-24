@@ -8,7 +8,7 @@ const guard = require('./guard');
 const approvals = require('./approvals');
 const executor = require('./executor');
 const { TOOL_MAP, isReadOnly } = require('./tools');
-const { callProvider, appendToolResult, parseTextOnly, toPlainHistory, OPENAI_COMPATIBLE } = require('./providers');
+const { callProvider, appendToolResult, parseTextOnly, toPlainHistory, OPENAI_COMPATIBLE, SHINE } = require('./providers');
 
 const runState = {
   active: false,
@@ -174,8 +174,13 @@ async function run(win, request, { signal } = {}) {
   }
 
   const provider = request.provider;
-  if (!request.apiKey) throw new Error(`No API key is configured for ${provider}.`);
-  if (!request.model) throw new Error(`No model is selected for ${provider}.`);
+  // The model that ships with the site takes no key and no model name - Shine
+  // no longer uses API keys at all - so the checks that guard every other
+  // provider would block PC Control outright for the default setup.
+  if (provider !== SHINE) {
+    if (!request.apiKey) throw new Error(`No API key is configured for ${provider}.`);
+    if (!request.model) throw new Error(`No model is selected for ${provider}.`);
+  }
 
   runState.active = true;
   runState.cancelled = false;
@@ -203,7 +208,11 @@ async function run(win, request, { signal } = {}) {
   const profileText = await buildProfileText();
   const systemContext = [profileText, request.systemContext || ''].filter(Boolean).join('\n\n');
   let pendingImages = [];
-  let useTools = true;
+  // The site's own model never answers with native tool_calls, so asking it
+  // for tools would only waste a step: it writes the call out as text and the
+  // text-protocol path below reads it. Every other provider starts with tools
+  // on and falls back if the provider rejects them.
+  let useTools = provider !== SHINE;
   let finalText = '';
 
   try {
