@@ -36,6 +36,37 @@ function check(name, condition, detail) {
   }
 }
 
+console.log('\nUninstall mode: a double-clicked uninstaller must know what it is');
+{
+  const inFolder = (name) => path.join('C:\\Program Files\\Shine', name);
+
+  check(
+    'double-clicking "Uninstall Shine.exe" is an uninstall, with no flag',
+    installer.isUninstallerInvocation([], inFolder('Uninstall Shine.exe')) === true
+  );
+  check(
+    'the Add/Remove Programs flag alone is still enough',
+    installer.isUninstallerInvocation(['--uninstall'], inFolder('ShineSetup.exe')) === true
+  );
+  check(
+    'the copy parked off the install folder is an uninstaller too',
+    installer.isUninstallerInvocation([], path.join(os.tmpdir(), 'Shine-uninstall-1730000000-123456.exe')) === true
+  );
+  check(
+    'the setup itself is never mistaken for an uninstaller',
+    installer.isUninstallerInvocation([], inFolder('ShineSetup.exe')) === false
+  );
+  check(
+    'running under a plain Electron binary is not an uninstaller',
+    installer.isUninstallerInvocation([], process.execPath) === false
+  );
+  check(
+    'a name that merely contains the word does not count',
+    installer.isUninstallerInvocation([], inFolder('installer.exe')) === false
+  );
+  check('a missing self path fails closed', installer.isUninstallerInvocation([], null) === false);
+}
+
 (async () => {
   const dir = path.join(tmp, 'Programs', 'Shine');
   const desktopLink = path.join(process.env.SHINE_TEST_DESKTOP_DIR, 'Shine.lnk');

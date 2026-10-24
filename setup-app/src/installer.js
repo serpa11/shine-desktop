@@ -163,6 +163,30 @@ function setupExePath() {
   return process.execPath;
 }
 
+/**
+ * Whether this run was started as the uninstaller.
+ *
+ * Add/Remove Programs passes --uninstall, but nobody launches an uninstaller
+ * from a shell: they double-click "Uninstall Shine.exe" in the folder, which
+ * arrives with no arguments at all. Deciding from the flag alone meant that
+ * window came up presenting itself as "Shine Setup", with an Install button
+ * and no way to remove anything - the opposite of what the file is named.
+ *
+ * So the name this installer writes is part of the contract too, not just
+ * the flag. The second pattern is the copy parked out of its own way while
+ * it is being renamed off the install folder.
+ *
+ * selfExe comes from setupExePath(), because the portable wrapper runs from
+ * a temp folder where process.execPath is a bare electron.exe that knows
+ * nothing about what the user clicked.
+ */
+function isUninstallerInvocation(argv, selfExe) {
+  if ((argv || []).includes('--uninstall')) return true;
+  if (!selfExe) return false;
+  const name = path.basename(selfExe);
+  return /^uninstall\b/i.test(name) || /^shine-uninstall-\d+-\d+\.exe$/i.test(name);
+}
+
 async function writeUninstaller(dir) {
   const source = setupExePath();
   const target = path.join(dir, `Uninstall ${APP_NAME}.exe`);
@@ -532,6 +556,6 @@ async function uninstall(onStep) {
 module.exports = {
   APP_NAME, defaultInstallDir, desktopDir, startMenuDir, startupDir,
   checkDisk, isInstalled, previousInstall, verifyInstall, install, repair,
-  uninstall, setupExePath, parkExecutable, scheduleRebootDelete, sweepParked,
-  sweepRepairFolders, parkedFiles, runPowerShell,
+  uninstall, setupExePath, isUninstallerInvocation, parkExecutable,
+  scheduleRebootDelete, sweepParked, sweepRepairFolders, parkedFiles, runPowerShell,
 };

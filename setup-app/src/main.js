@@ -4,7 +4,15 @@ const path = require('node:path');
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const installer = require('./installer');
 
-const isUninstall = process.argv.includes('--uninstall');
+/**
+ * Which way this run was launched.
+ *
+ * Deciding from --uninstall alone meant double-clicking "Uninstall Shine.exe"
+ * presented the install screen, with the Uninstall button hidden, because a
+ * double-click passes no arguments. The installer writes that file name, so
+ * the name has to count too - see isUninstallerInvocation().
+ */
+const isUninstall = installer.isUninstallerInvocation(process.argv, installer.setupExePath());
 
 /**
  * Silent install/uninstall, for scripting and for the end-to-end test.
