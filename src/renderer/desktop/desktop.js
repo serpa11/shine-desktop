@@ -360,6 +360,9 @@
         }, [svg(GLYPH.user)]),
         el('div', { class: 'shine-tb-spacer' }),
         pcBtn,
+        textButton('Vision', 'Have Shine look at your screen and describe it', function () {
+          Vision.open();
+        }),
         textButton('Log', 'What Shine has done on this computer', function () {
           Log.open();
         }),
@@ -991,6 +994,91 @@
   })();
 
   /* ======================================================================
+     Vision - the model looks at the screen
+     ====================================================================== */
+
+  var Vision = (function () {
+    // Runs on open and again on "Look again", so it is a function rather than
+    // something the render callback does once: a screen changes, and looking
+    // twice is the whole point of the second button.
+    function fill(body) {
+      body.innerHTML = '';
+
+      var status = el('div', { class: 'shine-empty', text: 'Looking at your screen...' });
+      body.appendChild(status);
+
+      var shot = el('img', { class: 'shine-vision-shot', alt: 'Your screen', style: { display: 'none' } });
+      body.appendChild(shot);
+
+      var said = el('div', { class: 'shine-vision-text' });
+      body.appendChild(said);
+
+      function fail(message) {
+        status.parentNode && status.parentNode.removeChild(status);
+        shot.style.display = 'none';
+        said.className = 'shine-vision-text shine-vision-error';
+        said.textContent = message;
+      }
+
+      if (!D.vision || typeof D.vision.describe !== 'function') {
+        fail('This copy of Shine cannot look at your screen.');
+        return;
+      }
+
+      // The endpoint the page itself posts to, resolved to an absolute URL:
+      // the bundled fallback runs from file://, where there is no origin.
+      var endpoint = siteChatEndpoint('/api/shine/chat/v1/chat/completions');
+
+      D.vision.describe({ endpoint: endpoint }).then(
+        function (result) {
+          if (!result) {
+            fail('Shine got nothing back from that look.');
+            return;
+          }
+          if (result.image) {
+            shot.src = result.image;
+            shot.style.display = '';
+          }
+          status.parentNode && status.parentNode.removeChild(status);
+          if (result.error) {
+            said.className = 'shine-vision-text shine-vision-error';
+            said.textContent = result.error;
+            return;
+          }
+          said.textContent = result.text;
+        },
+        function (err) {
+          fail('Shine could not look at your screen: ' + ((err && err.message) || err));
+        }
+      );
+    }
+
+    function open() {
+      Modal.open({
+        title: 'Vision',
+        sub: 'What Shine can see on your screen.',
+        render: fill,
+        footer: function (foot, api) {
+          foot.appendChild(
+            el('button', {
+              class: 'shine-btn',
+              type: 'button',
+              text: 'Look again',
+              onclick: function () {
+                fill(api.body);
+              },
+            })
+          );
+          foot.appendChild(el('span', { class: 'grow' }));
+          foot.appendChild(el('button', { class: 'shine-btn primary', type: 'button', text: 'Close', onclick: api.close }));
+        },
+      });
+    }
+
+    return { open: open };
+  })();
+
+  /* ======================================================================
      Approval dialog
      ====================================================================== */
 
@@ -1125,32 +1213,41 @@
     }
 
     /**
-     * The model that ships with the Shine site itself, behind /api/chat.
+     * The model that ships with the Shine site itself.
      *
      * Shine no longer uses API keys, so this is the provider a normal setup
      * has. It is deliberately not part of matchProvider: when PC Control is
      * off the site's own chat must reach that endpoint untouched, because it
      * streams and the main-process proxy does not. It is only recognised here,
      * so PC Control can take the same request over.
+     *
+     * The path moved when the site moved to Cloudflare Workers AI: it was
+     * /api/chat and is now /api/shine/chat/v1/chat/completions. Matching only
+     * the old path left the new one to matchProvider's OpenAI-shaped
+     * catch-all, which claimed it as the site's "Custom AI" provider - so with
+     * PC Control on the request was looked for an API key, found none and was
+     * handed back untouched, and keyless PC Control simply stopped firing.
+     * Both paths are matched so a copy of the site from either era works.
      */
     function isSiteOwnChat(url) {
-      return /\/api\/chat(\?|$)/i.test(String(url || ''));
+      var u = String(url || '');
+      return /\/api\/shine\/chat(\/|\?|$)/i.test(u) || /\/api\/chat(\?|$)/i.test(u);
     }
 
     /**
      * Absolute address of the site's model.
      *
-     * The site posts to the relative path /api/chat. That resolves against
-     * whatever page is loaded - the live site normally, but the bundled
-     * fallback when it is opened as a file, where there is no origin to speak
-     * of. The main process needs a real URL either way, so a file:// page
-     * falls back to the deployed site.
+     * The site posts to a relative path. That resolves against whatever page
+     * is loaded - the live site normally, but the bundled fallback when it is
+     * opened as a file, where there is no origin to speak of. The main process
+     * needs a real URL either way, so a file:// page falls back to the
+     * deployed site.
      */
     function siteChatEndpoint(url) {
       if (/^https?:/i.test(url)) return url;
       var origin = String(location.origin || '');
       if (/^https?:/i.test(origin)) return origin + (url.charAt(0) === '/' ? url : '/' + url);
-      return 'https://shineai-9mr.pages.dev/api/chat';
+      return 'https://shineai-9mr.pages.dev/api/shine/chat/v1/chat/completions';
     }
 
     function headerValue(headers, name) {

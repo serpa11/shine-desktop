@@ -72,6 +72,11 @@ contextBridge.exposeInMainWorld('shineDesktop', {
     transcribe: (payload) => invoke('mic:transcribe', payload),
   },
 
+  /* Vision: capture the screen and have the model describe it */
+  vision: {
+    describe: (payload) => invoke('vision:describe', payload),
+  },
+
   /* Network proxy: removes CORS / mixed-content limits and attaches the profile */
   net: {
     request: (payload) => invoke('net:request', payload),

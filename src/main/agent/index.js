@@ -162,6 +162,35 @@ async function buildProfileImages() {
   }
 }
 
+const SCREEN_NOTE = 'Here is what the screen looks like right now.';
+
+/**
+ * Hands a captured screen to the model.
+ *
+ * The picture rides on a message rather than being bolted onto whatever
+ * happens to be last. After a tool call the last message is a tool result,
+ * and Anthropic answers a tool_use with the very next user message - so
+ * overwriting that message deletes the result the model is about to read and
+ * the API rejects the whole request. When the last message is a plain user
+ * message the picture joins it, otherwise it gets one of its own.
+ */
+function attachScreenshot(messages, shot) {
+  const last = messages[messages.length - 1];
+  const joinable =
+    last &&
+    last.role === 'user' &&
+    !last.toolResults?.length &&
+    !last.toolCalls?.length &&
+    last.content === undefined;
+
+  if (joinable) {
+    last.images = [...(last.images || []), ...shot];
+    if (!last.text) last.text = SCREEN_NOTE;
+    return;
+  }
+  messages.push({ role: 'user', text: SCREEN_NOTE, images: shot });
+}
+
 /**
  * Main entry point. Runs the full agent loop and resolves with a final text answer.
  */
@@ -207,7 +236,8 @@ async function run(win, request, { signal } = {}) {
   const screenshots = [];
   const profileText = await buildProfileText();
   const systemContext = [profileText, request.systemContext || ''].filter(Boolean).join('\n\n');
-  let pendingImages = [];
+  // Screenshots travel on their own message (see attachScreenshot); only the
+  // profile picture rides along with every request.
   // The site's own model never answers with native tool_calls, so asking it
   // for tools would only waste a step: it writes the call out as text and the
   // text-protocol path below reads it. Every other provider starts with tools
@@ -231,7 +261,7 @@ async function run(win, request, { signal } = {}) {
             authStyle: request.authStyle,
             systemPrompt: buildSystemPrompt(systemContext),
             messages,
-            images: [...pendingImages, ...profileImages],
+            images: profileImages,
           },
           { signal: bounded.signal }
         );
@@ -245,7 +275,6 @@ async function run(win, request, { signal } = {}) {
       } finally {
         bounded.done();
       }
-      pendingImages = [];
 
       if (!useTools) {
         const textOnly = parseTextOnly(parsed.text);
@@ -258,6 +287,13 @@ async function run(win, request, { signal } = {}) {
           messages[messages.length - 1].toolCalls = [{ name: call.name, args: call.args }];
           messages.push({ role: 'user', text: '' });
           messages[messages.length - 1].toolResults = [outcome.payload];
+          // The site's own model runs through this branch - it is the default
+          // and needs no key - so a screenshot dropped here would mean vision
+          // never worked for the setup almost everyone is on.
+          if (outcome.payload?.ok && outcome.screenshot) {
+            screenshots.push({ path: outcome.payload.output?.path, dataUrl: `data:image/png;base64,${outcome.screenshot.data}` });
+            attachScreenshot(messages, [outcome.screenshot]);
+          }
           continue;
         }
         break;
@@ -267,11 +303,11 @@ async function run(win, request, { signal } = {}) {
         for (const call of parsed.toolCalls) {
           const outcome = await runOneTool(win, call, step, maxSteps, dangerMode);
           usedTools.push(outcome.record);
-          if (outcome.payload?.ok && outcome.screenshot) {
-            pendingImages = [outcome.screenshot];
-            screenshots.push({ path: outcome.payload.output?.path, dataUrl: `data:image/png;base64,${outcome.screenshot.data}` });
-          }
           appendToolResult(provider, messages, call, outcome.payload);
+          if (outcome.payload?.ok && outcome.screenshot) {
+            screenshots.push({ path: outcome.payload.output?.path, dataUrl: `data:image/png;base64,${outcome.screenshot.data}` });
+            attachScreenshot(messages, [outcome.screenshot]);
+          }
           if (runState.cancelled) throw new Error('Stopped by the user.');
         }
         continue;

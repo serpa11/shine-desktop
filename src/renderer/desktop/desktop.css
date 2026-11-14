@@ -414,6 +414,32 @@ body.shine-light .shine-btn.danger:hover:not(:disabled) { color: #fff; }
 
 .shine-empty { padding: 24px 12px; text-align: center; color: var(--shine-faint); font-size: 12.5px; }
 
+/* Vision: the frame the model was shown, and what it made of it */
+.shine-vision-shot {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--shine-line);
+  border-radius: 8px;
+  background: var(--shine-surface);
+}
+
+.shine-vision-text {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--shine-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* A failed look gets the same treatment as a refusal in the toast stack:
+   no colour, just a rule down the left so it reads as needing attention. */
+.shine-vision-error {
+  border-left: 3px solid var(--shine-ink);
+  padding-left: 10px;
+  color: var(--shine-dim);
+}
+
 /* PC Control action summary appended after an answer */
 .shine-tool-summary p { margin: 0 0 6px; }
 .shine-tool-summary ul { margin: 0; padding-left: 18px; }

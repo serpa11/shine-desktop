@@ -11,6 +11,7 @@ const approvals = require('./agent/approvals');
 const stt = require('./mic/stt');
 const accounts = require('./accounts');
 const profile = require('./profile');
+const vision = require('./vision');
 
 const isDev = process.argv.includes('--dev');
 const isDebugDump = process.argv.includes('--debug-dump');
@@ -141,6 +142,10 @@ function registerIpc() {
 
   /* PC Control */
   ipcMain.handle('pc:status', () => agent.status());
+
+  // Vision stands apart from PC Control: looking at the screen is read-only,
+  // so it is available whether or not the user has let Shine operate the PC.
+  ipcMain.handle('vision:describe', (_e, payload) => vision.describe(payload || {}));
   ipcMain.handle('pc:cancel', () => {
     agent.cancel();
     return { ok: true };

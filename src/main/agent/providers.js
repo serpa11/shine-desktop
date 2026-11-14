@@ -111,13 +111,38 @@ function toPlainHistory(history) {
 function buildOpenAi({ model, messages, images, systemPrompt }) {
   const convo = [];
   if (systemPrompt) convo.push({ role: 'system', content: systemPrompt });
-  convo.push(...messages);
+
+  for (const m of messages) {
+    const { text, images: attached, ...rest } = m;
+    // A message carrying pictures has to become a content array - that is the
+    // only shape the API accepts an image in. Otherwise the message is sent
+    // as it stands, with `text` mapped onto `content`, because the agent
+    // carries history as {role, text} and the API has never heard of that.
+    if (attached?.length) {
+      const content = [{ type: 'text', text: text || '' }];
+      for (const img of attached) {
+        content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.data}` } });
+      }
+      convo.push({ ...rest, content });
+    } else if (rest.content === undefined && typeof text === 'string') {
+      convo.push({ ...rest, content: text });
+    } else {
+      convo.push(m);
+    }
+  }
+
   const body = { model, messages: convo, tool_choice: 'auto', tools: openAiTools(), max_tokens: 2048 };
   if (images?.length) {
     const target = convo[convo.length - 1];
+    // Join a message that already holds a content array rather than replacing
+    // it: replacing would throw away the screenshot the model is looking at.
     if (target && target.role === 'user') {
-      target.content = [{ type: 'text', text: 'Here is what the screen looks like right now.' }];
-      for (const img of images) target.content.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+      if (!Array.isArray(target.content)) {
+        target.content = [{ type: 'text', text: 'Here is what the screen looks like right now.' }];
+      }
+      for (const img of images) {
+        target.content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.data}` } });
+      }
     }
   }
   return body;
@@ -144,16 +169,28 @@ function appendOpenAiToolResult(messages, toolCall, result) {
 /* ------------------------------------------------------------------ */
 
 function buildAnthropic({ model, messages, images, systemPrompt }) {
-  const convo = messages.map((m) => ({
-    role: m.role,
-    content: m.images?.length ? [{ type: 'text', text: m.text }, ...m.images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mimeType, data: i.data } }))] : m.text,
-  }));
+  const convo = messages.map((m) => {
+    if (!m.images?.length) return { role: m.role, content: m.text };
+    // A message can already hold blocks - a tool_result, for one - and the
+    // picture has to join them. Replacing the content here would delete the
+    // tool result the model is about to read, which Anthropic then rejects
+    // outright for having a tool_use with no answer.
+    const blocks = Array.isArray(m.content) ? [...m.content] : [];
+    if (m.text) blocks.push({ type: 'text', text: m.text });
+    blocks.push({ type: 'text', text: 'Here is what the screen looks like right now.' });
+    for (const i of m.images) {
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: i.mimeType, data: i.data } });
+    }
+    return { role: m.role, content: blocks };
+  });
   const last = convo[convo.length - 1];
   if (last?.role === 'user' && images?.length) {
-    last.content = [
-      { type: 'text', text: 'Here is what the screen looks like right now.' },
-      ...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mimeType, data: i.data } })),
-    ];
+    const blocks = Array.isArray(last.content) ? last.content : [{ type: 'text', text: String(last.content || '') }];
+    blocks.push({ type: 'text', text: 'Here is what the screen looks like right now.' });
+    for (const i of images) {
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: i.mimeType, data: i.data } });
+    }
+    last.content = blocks;
   }
   const body = { model, max_tokens: 2048, messages: convo, tools: anthropicTools() };
   if (systemPrompt) body.system = systemPrompt;
@@ -467,21 +504,32 @@ function parseTextOnly(text) {
 function flattenForTextProtocol(messages) {
   const convo = [];
   for (const m of messages) {
+    let role = m.role;
+    let text;
+
     if (m.toolResults?.length) {
-      convo.push({
-        role: 'user',
-        content: m.toolResults.map((r) => `<shine-result>${JSON.stringify(r)}</shine-result>`).join('\n'),
-      });
+      role = 'user';
+      text = m.toolResults.map((r) => `<shine-result>${JSON.stringify(r)}</shine-result>`).join('\n');
     } else if (m.toolCalls?.length) {
-      convo.push({
-        role: 'assistant',
-        content: m.text ? `${m.text}\n` : '',
-      });
+      role = 'assistant';
       const body = m.toolCalls.map((c) => `<shine-tool>${JSON.stringify({ name: c.name, args: c.args })}</shine-tool>`).join('\n');
-      if (convo[convo.length - 1].content) convo[convo.length - 1].content += `\n${body}`;
-      else convo[convo.length - 1].content = body;
+      text = m.text ? `${m.text}\n\n${body}` : body;
     } else {
-      convo.push({ role: m.role, content: m.text || '' });
+      text = m.text || '';
+    }
+
+    // A picture cannot be flattened into a string. The site's model takes an
+    // OpenAI-shaped content array, and this is the only shape that puts a
+    // captured screen in front of it - without it the image dies in the
+    // history and the model has to answer from the tool's text alone.
+    if (m.images?.length) {
+      const content = [{ type: 'text', text }];
+      for (const img of m.images) {
+        content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.data}` } });
+      }
+      convo.push({ role, content });
+    } else {
+      convo.push({ role, content: text });
     }
   }
   return convo;
