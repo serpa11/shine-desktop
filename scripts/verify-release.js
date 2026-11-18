@@ -58,6 +58,34 @@ if (vendor) {
   check('the fallback matches the live page byte for byte', vendor.length === 1536163, `${vendor.length} bytes`);
 }
 
+// Vision is spread across five files; any one of them missing from the asar
+// means the button is there and does nothing.
+const visionModule = fromAsar(path.join('src', 'main', 'vision.js'));
+check('the vision module is in the payload', visionModule !== null);
+if (visionModule) {
+  check('it captures the screen', /desktopCapturer/.test(visionModule));
+  check('it posts the picture to the keyless model', /image_url/.test(visionModule));
+  check('it records the look in the activity log', /appendLog/.test(visionModule));
+}
+
+const preload = fromAsar(path.join('src', 'main', 'preload.js'));
+check('preload exposes the vision channel', preload !== null && /vision:\s*\{[^}]*describe/.test(preload.replace(/\s+/g, ' ')));
+
+const mainJs = fromAsar(path.join('src', 'main', 'main.js'));
+check('main registers the vision channel', mainJs !== null && mainJs.includes("ipcMain.handle('vision:describe'"));
+
+const pageScript = fromAsar(path.join('src', 'renderer', 'desktop', 'desktop.js'));
+check('the window bar has a Vision button', pageScript !== null && /textButton\('Vision'/.test(pageScript));
+
+// The site moved its model to /api/shine/chat; if this ever reverts to
+// matching only /api/chat, keyless PC Control stops firing again.
+if (pageScript) {
+  check(
+    'the app recognises the endpoint the site now posts to',
+    /api\\\/shine\\\/chat/.test(pageScript) || pageScript.includes('/api/shine/chat')
+  );
+}
+
 // The payload the installer embeds has to be the one built from that asar,
 // otherwise the checks above describe a build nobody will download.
 const zipStat = fs.statSync(zipPath);

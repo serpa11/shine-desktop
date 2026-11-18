@@ -173,12 +173,29 @@ const TOOLS = [
   ),
 
   T(
+    'download_file',
+    'Download a file from the internet and save it to a path. Use this whenever the user asks you to download something - an installer, an image, a zip, a document, a video. It streams straight to disk, so large files are fine, and it reports the size when it is done.',
+    {
+      type: 'object',
+      properties: {
+        url: str('The http or https URL to download.'),
+        to: str('Absolute path to save the file to, e.g. the Downloads folder.'),
+        timeoutMs: num('How long to wait before giving up. Default 600000, maximum 1800000.'),
+      },
+      required: ['url', 'to'],
+      additionalProperties: false,
+    },
+    'write'
+  ),
+
+  T(
     'run_command',
-    'Run a Windows command and return its output. PowerShell is available. Use it for things no other tool covers (git, npm, winget, ffmpeg, curl, ...). Give it one command at a time and quote paths.',
+    'Run a command and return its output. Both shells work: PowerShell commands (Get-Process, winget, git, npm, ffmpeg, curl) and cmd.exe syntax (&& chains, dir /b, type, copy /y, %USERNAME%, > nul) are both understood - the shell is picked from the command, or set shell explicitly. Give it one command at a time and quote paths.',
     {
       type: 'object',
       properties: {
         command: str('The exact command to run, e.g. "winget list --name Discord".'),
+        shell: str('Optional: "powershell" or "cmd" to force a shell. Omit to detect it from the command.'),
         timeoutMs: num('How long to wait before giving up. Default 30000, maximum 300000.'),
       },
       required: ['command'],

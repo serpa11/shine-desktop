@@ -75,6 +75,28 @@
     user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4.5 20a7.5 7.5 0 0 1 15 0'],
   };
 
+  /**
+   * Absolute address of the site's model.
+   *
+   * The site posts to a relative path. That resolves against whatever page
+   * is loaded - the live site normally, but the bundled fallback when it is
+   * opened as a file, where there is no origin to speak of. The main process
+   * needs a real URL either way, so a file:// page falls back to the
+   * deployed site.
+   *
+   * This sits at file scope, not inside the Agent module: Vision resolves the
+   * same address, and a helper nested in Agent is invisible to the sibling
+   * Vision IIFE. Calling it from there throws a ReferenceError inside a click
+   * listener, where it never reaches the caller's try/catch - the button just
+   * appears to do nothing.
+   */
+  function siteChatEndpoint(url) {
+    if (/^https?:/i.test(url)) return url;
+    var origin = String(location.origin || '');
+    if (/^https?:/i.test(origin)) return origin + (url.charAt(0) === '/' ? url : '/' + url);
+    return 'https://shineai-9mr.pages.dev/api/shine/chat/v1/chat/completions';
+  }
+
   /* ======================================================================
      Toasts
      ====================================================================== */
@@ -1232,22 +1254,6 @@
     function isSiteOwnChat(url) {
       var u = String(url || '');
       return /\/api\/shine\/chat(\/|\?|$)/i.test(u) || /\/api\/chat(\?|$)/i.test(u);
-    }
-
-    /**
-     * Absolute address of the site's model.
-     *
-     * The site posts to a relative path. That resolves against whatever page
-     * is loaded - the live site normally, but the bundled fallback when it is
-     * opened as a file, where there is no origin to speak of. The main process
-     * needs a real URL either way, so a file:// page falls back to the
-     * deployed site.
-     */
-    function siteChatEndpoint(url) {
-      if (/^https?:/i.test(url)) return url;
-      var origin = String(location.origin || '');
-      if (/^https?:/i.test(origin)) return origin + (url.charAt(0) === '/' ? url : '/' + url);
-      return 'https://shineai-9mr.pages.dev/api/shine/chat/v1/chat/completions';
     }
 
     function headerValue(headers, name) {

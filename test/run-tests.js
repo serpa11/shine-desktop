@@ -13,7 +13,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const guard = require('../src/main/agent/guard');
-const { execute, summarise } = require('../src/main/agent/executor');
+const { execute, summarise, looksLikeCmd, looksLikeParseError } = require('../src/main/agent/executor');
 const { TOOLS, isReadOnly, openAiTools, anthropicTools, geminiTools, stripUnsupported } = require('../src/main/agent/tools');
 
 let passed = 0;
@@ -146,6 +146,84 @@ section('Executor: read-only tools');
 
   const psFail = await execute('run_command', { command: 'this-command-does-not-exist-xyz' });
   check('run_command surfaces failures', !psFail.ok || psFail.output.exitCode !== 0);
+
+  section('Executor: shell routing');
+
+  // Classification is checked directly because a mis-classification is
+  // otherwise invisible: the command runs, but in the wrong shell, so it
+  // either mangles what it writes or dies before it starts.
+  check('an && chain is treated as cmd', looksLikeCmd('cd C:\\temp && echo hi'));
+  check('type nul is treated as cmd', looksLikeCmd('type nul > C:\\temp\\x.txt'));
+  check('a redirect to nul is treated as cmd', looksLikeCmd('winget list > nul'));
+  check('%VAR% expansion is treated as cmd', looksLikeCmd('echo %USERNAME%'));
+  check('cmd switches are treated as cmd', looksLikeCmd('dir /b C:\\temp'));
+  check('echo into a file is treated as cmd', looksLikeCmd('echo hello > out.txt'));
+  check('a PowerShell cmdlet stays in PowerShell', !looksLikeCmd('Get-Process | Select-Object -First 3'));
+  check('a plain tool call stays in PowerShell', !looksLikeCmd('winget list --name Discord'));
+  check('a forward-slash path is not read as a switch', !looksLikeCmd('cd C:/Users'));
+
+  check(
+    'a PowerShell parse failure is recognised',
+    looksLikeParseError({ stderr: "The token '&&' is not a valid statement separator in this version." })
+  );
+  check('an ordinary failure is not a parse failure', !looksLikeParseError({ stderr: 'Get-Process : command not found' }));
+
+  // The three spellings that failed in a real session, run for real.
+  const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shine-shell-'));
+
+  const chained = await execute('run_command', { command: `cd /d "${shellDir}" && echo idk > idk.txt` });
+  check('cmd && chain runs', chained.ok && fs.existsSync(path.join(shellDir, 'idk.txt')), chained.error || chained.output?.stderr);
+  check('the chain reports shell cmd', chained.output?.shell === 'cmd', chained.output?.shell);
+
+  const nulTarget = path.join(shellDir, 'nul.txt');
+  const typed = await execute('run_command', { command: `type nul > "${nulTarget}"` });
+  check('type nul runs', typed.ok && fs.existsSync(nulTarget), typed.error || typed.output?.stderr);
+
+  const echoTarget = path.join(shellDir, 'echo.txt');
+  const echoed = await execute('run_command', { command: `echo idk > "${echoTarget}"` });
+  check(
+    'echo redirect runs and writes plain text',
+    echoed.ok && fs.readFileSync(echoTarget, 'utf8').trim() === 'idk',
+    echoed.error || echoed.output?.stderr
+  );
+
+  const forced = await execute('run_command', { command: `echo idk > "${path.join(shellDir, 'forced.txt')}"`, shell: 'powershell' });
+  check('shell powershell is honoured over detection', forced.output?.shell === 'powershell', forced.output?.shell);
+
+  fs.rmSync(shellDir, { recursive: true, force: true });
+
+  section('Executor: download_file');
+  {
+    const http = require('node:http');
+    const server = http.createServer((req, res) => {
+      if (req.url === '/missing') {
+        res.writeHead(404);
+        res.end('not here');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/zip' });
+      res.end(Buffer.from('PKshine-download'));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const dest = path.join(os.tmpdir(), `shine-dl-${Date.now()}.zip`);
+
+    const got = await execute('download_file', { url: `${origin}/file.zip`, to: dest });
+    check('download_file saves the file', got.ok && fs.existsSync(dest), got.error);
+    check('download_file wrote the right bytes', got.ok && fs.readFileSync(dest, 'binary').includes('shine-download'));
+    check('download_file reports the size', got.ok && got.output?.bytes > 0, JSON.stringify(got.output));
+    check('download_file reports the content type', got.ok && /application\/zip/.test(got.output?.contentType || ''), got.output?.contentType);
+
+    const refused = await execute('download_file', { url: 'file:///C:/Windows/win.ini', to: `${dest}.bad` });
+    check('a non-http URL is refused', !refused.ok && /only http and https/i.test(refused.error || ''), refused.error);
+
+    const missing = await execute('download_file', { url: `${origin}/missing`, to: `${dest}.404` });
+    check('a 404 is reported as a failure', !missing.ok && /404/.test(missing.error || ''), missing.error);
+    check('a failed download leaves no finished-looking file', !fs.existsSync(`${dest}.404`) && !fs.existsSync(`${dest}.404.shine-partial`));
+
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(dest, { force: true });
+  }
 
   section('Executor: process safety');
   const selfKill = await execute('kill_process', { pid: process.pid });

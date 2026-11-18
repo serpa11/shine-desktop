@@ -78,7 +78,7 @@ function buildSystemPrompt(extraContext = '') {
 
 # Environment
 - Operating system: ${os.type()} ${os.release()} (${process.platform}, ${os.arch()})
-- PowerShell is available for shell work. Prefer PowerShell over cmd.exe.
+- Both shells are available: PowerShell cmdlets (Get-Process, winget, npm, ffmpeg, curl) and cmd.exe syntax (&& chains, dir /b, type, copy /y, %USERNAME%, > nul). run_command works out which shell a command is written for; pass shell "cmd" or "powershell" to force one. Write it in whichever fits - there is no need to translate cmd syntax into PowerShell.
 - The user's home folder is ${os.homedir()}.
 - The user's desktop is ${path.join(os.homedir(), 'Desktop')}, downloads ${path.join(os.homedir(), 'Downloads')}, documents ${path.join(os.homedir(), 'Documents')}.
 - Current time: ${new Date().toString()}
