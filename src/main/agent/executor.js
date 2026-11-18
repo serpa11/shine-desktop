@@ -5,11 +5,20 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { spawn, exec, execFile } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 
 const { TOOL_MAP, normaliseArgs } = require('./tools');
+
+/**
+ * Everything that depends on which machine this is runs in platform/.
+ * runPowerShell and psQuote are still the Windows spellings used below by the
+ * tools that have no Linux counterpart yet; runCommand is the shared entry
+ * point, because picking a shell is exactly the part that differs per OS.
+ */
+const platform = require('./platform');
+const { runCommand, runPowerShell, psQuote } = platform;
 
 /* ------------------------------------------------------------------ */
 /* Windows settings Shine knows how to change                         */
@@ -146,141 +155,6 @@ function parseAppMatches(stdout) {
     .concat([...String(stdout || '').matchAll(/^MATCH:(.+)$/gm)].map((m) => m[1]))
     .map((s) => s.trim())
     .filter((s, i, arr) => s && arr.indexOf(s) === i);
-}
-
-/* ------------------------------------------------------------------ */
-/* PowerShell bridge                                                  */
-/* ------------------------------------------------------------------ */
-
-/**
- * PowerShell is invoked through -EncodedCommand so we never have to worry
- * about quoting a user/model supplied string into a command line.
- */
-function runPowerShell(script, { timeoutMs = 30000, sta = false } = {}) {
-  return new Promise((resolve) => {
-    const payload = Buffer.from(script, 'utf16le').toString('base64');
-    const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', payload];
-    if (sta) args.splice(1, 0, '-STA');
-
-    execFile(
-      'powershell.exe',
-      args,
-      { timeout: timeoutMs, windowsHide: true, maxBuffer: 12 * 1024 * 1024, encoding: 'utf8' },
-      (err, stdout, stderr) => {
-        const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0;
-        resolve({
-          ok: !err,
-          code,
-          stdout: String(stdout || '').trim(),
-          stderr: String(stderr || '').trim(),
-          timedOut: Boolean(err && err.killed),
-        });
-      }
-    );
-  });
-}
-
-/**
- * Runs a cmd.exe-style command.
- *
- * This deliberately does not use execFile('cmd.exe', ['/c', command]). Node
- * escapes that argument with backslash-escaped quotes, and cmd.exe has no \"
- * escape: it reads the stray quote as a terminator, so every command that
- * quotes a path fails with "The filename, directory name, or volume label
- * syntax is incorrect". Handing the string to child_process to run through
- * the platform shell is the only form that survives quoted paths, && chains,
- * pipes and `type nul` alike - all four were checked against each other
- * before this was written. Leaving `shell` unset also means the OS default is
- * used, so the same call works when Shine is ported to Linux.
- */
-function runCmd(command, { timeoutMs = 30000 } = {}) {
-  return new Promise((resolve) => {
-    exec(
-      command,
-      { timeout: timeoutMs, windowsHide: true, maxBuffer: 12 * 1024 * 1024, encoding: 'utf8' },
-      (err, stdout, stderr) => {
-        const code = err && typeof err.code === 'number' ? err.code : err ? 1 : 0;
-        resolve({
-          ok: !err,
-          code,
-          stdout: String(stdout || '').trim(),
-          stderr: String(stderr || '').trim(),
-          timedOut: Boolean(err && err.killed),
-        });
-      }
-    );
-  });
-}
-
-/**
- * True when a command is written for cmd.exe rather than PowerShell.
- *
- * run_command used to hand everything to PowerShell, which made cmd spelling
- * either misbehave or not run at all: `type` is Get-Content there, so
- * "type nul > file" tries to read a path called nul, and Windows PowerShell
- * 5.1 has no && - that one is a *parse* error, which kills the entire script
- * so not even the rest of the line executes. A model retrying with a
- * different phrasing of the same cmd syntax just hits the same wall.
- *
- * Only syntax that genuinely cannot mean the same thing in both shells is
- * listed. A false negative is covered by the parse-error retry below.
- */
-function looksLikeCmd(command) {
-  const c = String(command);
-  if (/&&|\|\|/.test(c)) return true; // PowerShell 5.1 cannot parse it
-  if (/\bnul\b/i.test(c)) return true; // type nul >, > nul, 2> nul
-  if (/%[A-Za-z_][A-Za-z0-9_]*%/.test(c)) return true; // %USERNAME% expansion
-  if (/^\s*@?echo\s+(off|on)\b/i.test(c)) return true;
-  if (/^\s*(goto|setlocal|endlocal|pause|chdir|cls)\b/i.test(c)) return true;
-  // "echo x > file" spells the same command in both shells but writes
-  // different bytes: cmd writes plain text, Windows PowerShell 5.1 writes
-  // UTF-16 with a BOM. A .bat created that way is one cmd.exe refuses to
-  // run, so the cmd reading is the one that behaves as written.
-  if (/^\s*@?echo\s[^<>\n]*[>]{1,2}\s*\S/.test(c)) return true;
-  // cmd builtins used with cmd-only switches: dir /w, del /f /q, copy /y,
-  // cd /d. A forward slash after a space, so C:/Users is not mistaken for one.
-  if (/^\s*(cd|dir|copy|del|erase|move|ren|rename|md|rd|attrib|type)\b[^\n]*\s\/[a-zA-Z]/.test(c)) return true;
-  return false;
-}
-
-/**
- * True when PowerShell refused to parse the script, meaning nothing ran.
- *
- * This is the safety net for a cmd command the detector missed: re-running
- * through cmd.exe cannot make matters worse, because PowerShell never got as
- * far as executing anything.
- */
-function looksLikeParseError(result) {
-  const text = `${result.stderr || ''}\n${result.stdout || ''}`;
-  return /ParserError|InvalidEndOfLine|not a valid statement separator|Unexpected token|The token '/i.test(text);
-}
-
-/**
- * The wrapper around a single command.
- *
- * Errors are terminating inside it so that a failed command is reported as a
- * failure. PowerShell otherwise exits 0 even when the command was not found,
- * which would make Shine believe it worked.
- */
-function psWrapper(command) {
-  return [
-    '$ProgressPreference = "SilentlyContinue"',
-    '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-    '$__exit = 0',
-    'try {',
-    '  $ErrorActionPreference = "Stop"',
-    `  ${command}`,
-    '  if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { $__exit = $LASTEXITCODE }',
-    '} catch {',
-    '  [Console]::Error.WriteLine($_.Exception.Message)',
-    '  $__exit = 1',
-    '}',
-    'exit $__exit',
-  ].join('\n');
-}
-
-function psQuote(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 async function requireOk(result, label) {
@@ -661,30 +535,16 @@ const impl = {
     if (!command) throw new Error('run_command needs a command.');
     const timeoutMs = clamp(Number(args.timeoutMs || 30000), 1000, 300000);
 
-    // The shell is chosen from the command unless the model says which it
-    // means. cmd wins for cmd spelling because PowerShell would otherwise
-    // either mangle it or fail to parse it - see looksLikeCmd.
-    const requested = String(args.shell || '').trim().toLowerCase();
-    const forced = requested === 'cmd' || requested === 'powershell' || requested === 'pwsh';
-    const useCmd = forced ? requested === 'cmd' : looksLikeCmd(command);
-
-    let res;
-    let shell = useCmd ? 'cmd' : 'powershell';
-    if (useCmd) {
-      res = await runCmd(command, { timeoutMs });
-    } else {
-      res = await runPowerShell(psWrapper(command), { timeoutMs, sta: true });
-      if (!res.ok && looksLikeParseError(res)) {
-        res = await runCmd(command, { timeoutMs });
-        shell = 'cmd';
-      }
-    }
+    // Which shell reads it, and how cmd and PowerShell are told apart, live in
+    // platform/: that decision is the part that differs per machine, and it is
+    // the part that silently broke when every command went to PowerShell.
+    const res = await runCommand(command, { timeoutMs, shell: args.shell });
 
     const out = (res.stdout || '').slice(0, 40000);
     const err = (res.stderr || '').slice(0, 12000);
     return {
       command,
-      shell,
+      shell: res.shell,
       exitCode: res.code,
       timedOut: res.timedOut,
       stdout: out || '(no output)',
@@ -1375,4 +1235,15 @@ function summaryLine(name, rawArgs) {
   return summary.length > 110 ? `${summary.slice(0, 107)}...` : summary;
 }
 
-module.exports = { execute, summarise, summaryLine, runPowerShell, runCmd, looksLikeCmd, looksLikeParseError, impl };
+module.exports = {
+  execute,
+  summarise,
+  summaryLine,
+  runCommand,
+  runPowerShell,
+  // Re-exported so the shell-routing tests can assert on the real predicates
+  // rather than a copy that could drift from the shipped code.
+  looksLikeCmd: platform.looksLikeCmd,
+  looksLikeParseError: platform.looksLikeParseError,
+  impl,
+};

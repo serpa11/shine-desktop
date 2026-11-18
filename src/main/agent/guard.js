@@ -8,43 +8,100 @@
  *                   explicitly turned on "danger mode" in Settings.
  *   2. RISK       - per-action risk classification used to decide whether the
  *                   approval dialog should show extra warnings.
+ *
+ * The blocklist covers Windows and POSIX spellings alike. This matters
+ * because the guard runs before the command is routed to a shell: a Linux
+ * machine must not be able to destroy itself with `dd of=/dev/sda` just
+ * because the Windows rules were the ones written first.
  */
 
 const path = require('node:path');
 const fs = require('node:fs');
 
 const BLOCK_PATTERNS = [
-  { re: /rm\s+(-[a-z]*\s+)*-[a-z]*[rR][a-z]*[fF]/, why: 'recursive force delete (rm -rf)' },
+  // --- Recursive / forced deletion -------------------------------------
+  { re: /\brm\s+(?=[^\n]*-[a-zA-Z]*r)(?=[^\n]*-[a-zA-Z]*f)[^\n]*|\brm\s+(?=[^\n]*--recursive)(?=[^\n]*--force)[^\n]*/i, why: 'recursive force delete (rm -rf)' },
+  { re: /\brm\s+(?:-[a-zA-Z]+\s+)*\/\*/, why: 'deleting everything in a directory tree' },
   { re: /Remove-Item[^\n]*-Recurse[^\n]*-Force/i, why: 'recursive force delete (Remove-Item -Recurse -Force)' },
   { re: /Remove-Item[^\n]*-Recurse[^\n]*(C:\\|D:\\|E:\\)\s*$/im, why: 'recursive delete of a drive root' },
   { re: /rd\s+\/s\/q|rmdir\s+\/s/i, why: 'recursive directory delete' },
   { re: /del\s+\/[sfq]{2,}/i, why: 'forced recursive delete' },
+  { re: /\bfind\s+\/[^\n]*\s-delete\b|\bfind\b[^\n]*-exec\s+(?:rm|shred|unlink|truncate)/i, why: 'deleting from the filesystem root' },
+
+  // --- Disk and filesystem destruction ----------------------------------
   { re: /format\s+[a-z]:/i, why: 'disk format' },
   { re: /vssadmin\s+delete\s+shadows/i, why: 'shadow copy deletion' },
+  { re: /wipefs|mkfs|\bdd\b[^\n]*\bof=\/dev\/|(?:>>?)\s*\/dev\/(?:sd|nvme|vd|mmcblk|loop)/i, why: 'raw disk write' },
+  { re: /\b(?:shred|blkdiscard|badblocks\s+-w)\b|\bsgdisk\b[^\n]*--zap-all/i, why: 'irreversible disk wipe' },
+  { re: /(?:>>?)\s*\/etc\/(?:fstab|passwd|shadow|group|gshadow|sudoers)\b/i, why: 'overwriting a system configuration file' },
+
+  // --- Permission changes ----------------------------------------------
+  { re: /\bchmod\s+(?:-[a-zA-Z]+\s+)*(?:-R|--recursive)\s+(?:777|000)\s+\/(?:\s|$|[a-zA-Z0-9_.-])/i, why: 'making the filesystem world-writable' },
+  { re: /\bchown\s+(?:-[a-zA-Z]+\s+)*(?:-R|--recursive)\s+\S+\s+\/(?:\s|$|[a-zA-Z0-9_.-])/i, why: 'recursive ownership change on the system root' },
+  { re: /takeown\s+\/f\s+[a-z]:\\?\s*$/im, why: 'taking ownership of an entire drive' },
+  { re: /icacls\b[^\n]*\/reset/i, why: 'mass permission reset' },
+
+  // --- Windows configuration -------------------------------------------
   { re: /bcdedit\s+\/set\b/i, why: 'boot configuration change' },
   { re: /cipher\s+\/w/i, why: 'free space wiping' },
   { re: /reg\s+delete\b/i, why: 'registry deletion' },
   { re: /Remove-Item\b[^\n]*["']?\$?env:SystemRoot["']?/i, why: 'Windows directory deletion' },
   { re: /del(\s|\/)*[^\n]*\\Windows\\/i, why: 'Windows directory deletion' },
-  { re: /takeown\s+\/f\s+[a-z]:\\?\s*$/im, why: 'taking ownership of an entire drive' },
-  { re: /icacls\b[^\n]*\/reset/i, why: 'mass permission reset' },
+
+  // --- Disabling security tooling ---------------------------------------
   { re: /Set-MpPreference\b[^\n]*DisableRealtimeMonitoring/i, why: 'disabling Defender realtime protection' },
   { re: /Add-MpPreference\b[^\n]*ExclusionPath/i, why: 'adding a Defender exclusion' },
   { re: /Set-ExecutionPolicy\s+(Bypass|Unrestricted)/i, why: 'weakening execution policy' },
   { re: /New-NetFirewallRule[\s\S]{0,200}?Direction\s+Inbound[\s\S]{0,80}?Action\s+Allow/i, why: 'opening an inbound firewall rule' },
+  { re: /\b(?:ufw\s+disable|iptables\s+(?:-F|--flush)|nft\s+flush|firewall-cmd\s+--panic-off)\b/i, why: 'disabling the firewall' },
+  { re: /\b(?:systemctl|service)\s+(?:stop|disable|mask)\b[^\n]*\b(?:sshd|firewalld|ufw|apparmor|selinux|gufw|iptables)\b/i, why: 'stopping a security service' },
+  { re: /\b(?:iptables|nft)\b[^\n]*(?:-A\s+INPUT\s+-j\s+ACCEPT|--add-rule[^\n]*ACCEPT)/i, why: 'opening the firewall to all traffic' },
+
+  // --- Accounts and privileges ------------------------------------------
   { re: /net\s+user\s+\S+\s+\S+\s+\/add/i, why: 'creating or modifying a user account' },
   { re: /net\s+localgroup\s+Administrators\s+\S+/i, why: 'adding an account to Administrators' },
+  { re: /\b(?:useradd|adduser|userdel|deluser|usermod|visudo|chage)\b/i, why: 'user account administration' },
+  { re: /\bcrontab\s+-r\b|\brm\s+[^\n]*\/etc\/cron/i, why: 'removing scheduled tasks' },
+
+  // --- Immediate shutdown -----------------------------------------------
   { re: /(shutdown|Stop-Computer|Restart-Computer)\b[\s\S]{0,60}?(-t\s*0|\/t\s*0|-force|\/f\b)/i, why: 'immediate forced shutdown/restart' },
-  { re: /cipher\s|optimize\s+-volume|wipefs|mkfs|dd\s+if=/i, why: 'raw disk write' },
+  { re: /\b(?:poweroff|halt|reboot)\b|\bshutdown\b[^\n]*\bnow\b|\bsystemctl\s+(?:reboot|poweroff|halt)\b/i, why: 'immediate shutdown or restart' },
+  { re: /\bmount\s+--bind|\bumount\s+\/(?:\s|$)|\bswapoff\s+-a\b/i, why: 'unmounting or remounting the system' },
+
+  // --- Anything that executes fetched code ------------------------------
   { re: /:\(\)\s*\{\s*:\|:&\s*\}\s*;\s*:/, why: 'fork bomb' },
-  { re: /\bcurl\b[\s\S]{0,120}?\|\s*(ba)?sh\b/i, why: 'piping a downloaded script straight into a shell' },
+  { re: /\b(?:curl|wget)\b[\s\S]{0,160}?\|\s*(?:sudo\s+)?(?:ba|z|fi|c|k)?sh\b/i, why: 'piping a downloaded script straight into a shell' },
   { re: /Invoke-Expression\b|\biex\b\s+/i, why: 'dynamic code execution (Invoke-Expression)' },
 ];
 
-const RISKY_WRITE_DIRS = ['C:\\Windows', 'C:\\Program Files', 'C:\\Program Files (x86)', 'C:\\ProgramData', 'System32'];
+/**
+ * Locations whose contents are system-owned on either platform.
+ *
+ * Both spellings are listed because path.resolve() is platform specific: on
+ * Windows '/etc' resolves to 'C:\etc', and on Linux 'C:\Windows' resolves to
+ * '<cwd>/C:\Windows'. Neither can collide with a real path on the other OS,
+ * so one list safely serves both.
+ */
+const RISKY_WRITE_DIRS = [
+  'C:\\Windows',
+  'C:\\Program Files',
+  'C:\\Program Files (x86)',
+  'C:\\ProgramData',
+  'System32',
+  '/etc',
+  '/usr',
+  '/bin',
+  '/sbin',
+  '/lib',
+  '/lib64',
+  '/boot',
+  '/var',
+  '/root',
+  '/opt',
+];
 
 const DESTRUCTIVE_VERB =
-  /\b(rm|del|erase|remove|remove-item|rmdir|rd|format|diskpart|clear-disk|initialize-disk|uninstall|stop-process|taskkill|takeown|icacls|move-item|mv|rename-item|ren|attrib)\b/i;
+  /\b(rm|del|erase|remove|remove-item|rmdir|rd|format|diskpart|clear-disk|initialize-disk|uninstall|stop-process|taskkill|takeown|icacls|move-item|mv|rename-item|ren|attrib|shred|mkfs|wipefs|blkdiscard|chown|chmod|truncate|dd)\b/i;
 
 function stripQuotes(s) {
   return String(s || '').replace(/^["']|["']$/g, '');
@@ -108,7 +165,7 @@ function inspect({ kind, command, target, paths = [], dangerMode = false }) {
     if (DESTRUCTIVE_VERB.test(text) && !/\b(ls|dir|get|echo|write|read|echo)\b/i.test(text.split(/\s+/)[0] || '')) {
       warnings.push('The command contains a destructive verb (delete/remove/stop/uninstall).');
     }
-    if (/(^|\s)(sudo|runas)\b/i.test(text)) {
+    if (/(^|\s)(sudo|runas|pkexec|doas)\b/i.test(text)) {
       warnings.push('The command requests elevated privileges.');
     }
     if (/\s-{1,2}(force|yes|confirm|recursive|permanent)\b/i.test(text)) {
