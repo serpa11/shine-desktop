@@ -14,6 +14,10 @@
  * Run with: node test/linux-shell-tests.js
  */
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
 const linux = require('../src/main/agent/platform/linux');
 
 let passed = 0;
@@ -90,9 +94,85 @@ section('Linux: shell choice');
   check('an unrecognised shell falls back instead of failing', linux.pickShell('fish').name === 'bash');
 }
 
-section('Linux: what runCommand reports');
-
 (async () => {
+  section('Linux: finding applications');
+
+  // A menu directory built here rather than the real one. .desktop entries are
+  // plain text, so the whole search can be pinned without a desktop installed
+  // and without hoping the machine under the test has Firefox on it.
+  const menu = fs.mkdtempSync(path.join(os.tmpdir(), 'shine-menu-'));
+  const write = (name, body) => fs.writeFileSync(path.join(menu, name), body);
+  write('firefox.desktop', ['[Desktop Entry]', 'Type=Application', 'Name=Firefox', 'Exec=firefox %u', ''].join('\n'));
+  write(
+    'org.gnome.TextEditor.desktop',
+    ['[Desktop Entry]', 'Type=Application', 'Name=Text Editor', 'Exec=gnome-text-editor %F', ''].join('\n')
+  );
+  write('x-hidden.desktop', ['[Desktop Entry]', 'Type=Application', 'Name=Hidden App', 'Exec=hidden', 'Hidden=true', ''].join('\n'));
+  // Type=Link with an Exec present, so only the Type rule can reject it.
+  write('x-link.desktop', ['[Desktop Entry]', 'Type=Link', 'Name=A Link', 'Exec=should-not-run', 'URL=https://example.com', ''].join('\n'));
+
+  const byName = await linux.findApplications('firefox', { dirs: [menu] });
+  check('a name is found', byName.matches.length === 1, JSON.stringify(byName));
+  check('the Exec line is what comes back', byName.matches[0] === 'firefox %u', byName.matches[0]);
+
+  const byLabel = await linux.findApplications('text editor', { dirs: [menu] });
+  check('the label inside the file matches', byLabel.matches.length === 1, JSON.stringify(byLabel));
+
+  const byFile = await linux.findApplications('org.gnome', { dirs: [menu] });
+  check('the file name matches too', byFile.matches.length === 1, JSON.stringify(byFile));
+
+  const hidden = await linux.findApplications('hidden', { dirs: [menu] });
+  check('a hidden entry is not offered', hidden.matches.length === 0, JSON.stringify(hidden));
+
+  const link = await linux.findApplications('a link', { dirs: [menu] });
+  check('a non-application entry is not offered', link.matches.length === 0, JSON.stringify(link));
+
+  const cased = await linux.findApplications('FIREFOX', { dirs: [menu] });
+  check('the match ignores case', cased.matches.length === 1, JSON.stringify(cased));
+
+  const limited = await linux.findApplications('e', { dirs: [menu], limit: 1 });
+  check('the limit is respected', limited.matches.length === 1, JSON.stringify(limited));
+
+  const nowhere = await linux.findApplications('nothing here', { dirs: [menu] });
+  check('no match comes back empty rather than throwing', nowhere.matches.length === 0, JSON.stringify(nowhere));
+  check(
+    'the search says where it looked',
+    typeof nowhere.searched === 'string' && nowhere.searched.length > 0,
+    nowhere.searched
+  );
+  check(
+    'the usual menu directories are the default',
+    linux.APP_DIRS.length >= 2 && linux.APP_DIRS.some((d) => d.includes('applications')),
+    JSON.stringify(linux.APP_DIRS)
+  );
+
+  section('Linux: starting a program');
+
+  check('%f is dropped', linux.stripFieldCodes('/usr/bin/app %f') === '/usr/bin/app', linux.stripFieldCodes('/usr/bin/app %f'));
+  check('%u is dropped', linux.stripFieldCodes('app %u') === 'app', linux.stripFieldCodes('app %u'));
+  check(
+    'several field codes go at once',
+    linux.stripFieldCodes('app %f %F %u') === 'app',
+    linux.stripFieldCodes('app %f %F %u')
+  );
+  check(
+    'real arguments are left alone',
+    linux.stripFieldCodes('app --new-window') === 'app --new-window',
+    linux.stripFieldCodes('app --new-window')
+  );
+
+  check('the first word is taken bare', linux.firstToken('/usr/bin/app --flag') === '/usr/bin/app', linux.firstToken('/usr/bin/app --flag'));
+  check('quotes are resolved rather than kept', linux.firstToken("'my app' --flag") === 'my app', linux.firstToken("'my app' --flag"));
+  check('a bare name still yields', linux.firstToken('htop') === 'htop');
+
+  const miss = await linux.launchApplication('shine-no-such-app-anywhere', { dirs: [menu] });
+  check('a launch with nothing to find reports failure', miss.launched === false, JSON.stringify(miss));
+  check('the failed launch still lists what it found', Array.isArray(miss.matches), JSON.stringify(miss));
+
+  fs.rmSync(menu, { recursive: true, force: true });
+
+  section('Linux: what runCommand reports');
+
   // Only what runCommand() *reports* is asserted. Whether sh actually exists
   // differs between this machine and the one the code is written for, and
   // asserting on ok would make the suite pass for the wrong reason on one of

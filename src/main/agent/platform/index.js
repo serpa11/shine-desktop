@@ -9,4 +9,12 @@
  * process.platform is the only switch in the tree.
  */
 
-module.exports = process.platform === 'win32' ? require('./windows') : require('./linux');
+const isWindows = process.platform === 'win32';
+const impl = isWindows ? require('./windows') : require('./linux');
+
+module.exports = {
+  ...impl,
+  // Kept here rather than in either implementation: it is the one question the
+  // rest of the code still asks directly, and it gets answered once.
+  isWindows,
+};

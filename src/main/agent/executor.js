@@ -76,86 +76,6 @@ const WINDOWS_SETTINGS = {
   compact_start: { group: 'features', kind: 'reg', key: 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced', name: 'Start_TrackDocs', type: 'dword', description: 'Show recently opened items in Start and Explorer.' },
 };
 
-/* ------------------------------------------------------------------ */
-/* Finding installed applications                                      */
-/* ------------------------------------------------------------------ */
-
-/**
- * Builds the PowerShell that hunts for installed applications.
- *
- * Start-Process only resolves whatever is on PATH, which is almost nothing
- * that is actually installed, so "open spotify" failed for most apps. Windows
- * keeps the real answer in three places, and this checks all of them:
- *
- *   1. the App Paths registry key, which installers write for every app
- *   2. both Start Menu folders, which hold shortcuts for installed programs
- *   3. Program Files and System32, for anything else portable
- *
- * The user can also hand over a path directly, which is checked first so
- * "open D:\\Games\\thing.exe" always does exactly what was asked.
- */
-function appSearchScript(query, limit, doLaunch, argPart = '') {
-  const direct = path.extname(query).toLowerCase() === '.exe' ? `, ${psQuote(query)}` : '';
-
-  return `
-$ErrorActionPreference = 'SilentlyContinue'
-$query = ${psQuote(query)}
-$limit = ${limit}
-$found = New-Object System.Collections.Generic.List[string]
-
-function Add-Match($p) {
-  if ($p -and (Test-Path -LiteralPath $p) -and -not $found.Contains($p)) { $found.Add($p) }
-}
-
-# A full path was given - use it as-is.
-if ($query -match '^[A-Za-z]:\\\\') { Add-Match $query }
-
-# 1. App Paths registry: written by installers, the most reliable source.
-foreach ($root in @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths',
-                    'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths',
-                    'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths')) {
-  foreach ($k in @(Get-ChildItem -Path $root -ErrorAction SilentlyContinue |
-                   Where-Object { $_.PSChildName -like "*$query*" } | Select-Object -First $limit)) {
-    Add-Match (Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue).'(default)'
-  }
-}
-
-# 2. Start Menu shortcuts. Resolve the target so the result is a real exe.
-$shell = New-Object -ComObject WScript.Shell
-foreach ($menu in @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs",
-                    "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs")) {
-  if (-not (Test-Path $menu)) { continue }
-  Get-ChildItem -Path $menu -Filter *.lnk -Recurse -ErrorAction SilentlyContinue |
-    Where-Object { $_.BaseName -like "*$query*" } | Select-Object -First $limit |
-    ForEach-Object { Add-Match ($shell.CreateShortcut($_.FullName).TargetPath) }
-}
-
-# 3. Program Files and the system folder, shallow.
-$dirs = @($env:ProgramFiles, "\${env:ProgramFiles(x86)}", "$env:SystemRoot\\System32")
-foreach ($d in $dirs) {
-  if (-not $d -or -not (Test-Path $d)) { continue }
-  Get-ChildItem -Path $d -Filter "*$query*.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue |
-    Select-Object -First $limit | ForEach-Object { Add-Match $_.FullName }
-}
-
-if ($found.Count -eq 0) { Write-Output 'NOT_FOUND'; exit 0 }
-Write-Output ('MATCHES:' + ($found -join '|'))
-
-${doLaunch
-    ? `Start-Process -FilePath $found[0] -ErrorAction Stop
-Write-Output ('LAUNCHED:' + $found[0])`
-    : `$found | Select-Object -First $limit | ForEach-Object { Write-Output ('MATCH:' + $_) }`}
-`;
-}
-
-function parseAppMatches(stdout) {
-  const line = /MATCHES:(.+)/.exec(String(stdout || ''));
-  const raw = line ? line[1].split('|') : [];
-  return raw
-    .concat([...String(stdout || '').matchAll(/^MATCH:(.+)$/gm)].map((m) => m[1]))
-    .map((s) => s.trim())
-    .filter((s, i, arr) => s && arr.indexOf(s) === i);
-}
 
 async function requireOk(result, label) {
   if (!result.ok) {
@@ -556,7 +476,7 @@ const impl = {
   async open_path(args) {
     const target = resolvePath(args.path);
     if (!fs.existsSync(target)) throw new Error(`Nothing found at ${target}`);
-    const r = await runPowerShell(`Start-Process -FilePath ${psQuote(target)}`);
+    const r = await platform.openPath(target);
     await requireOk(r, 'open_path');
     return { path: target, opened: true };
   },
@@ -564,22 +484,14 @@ const impl = {
   async open_url(args) {
     const url = String(args.url || '').trim();
     if (!/^https?:\/\//i.test(url)) throw new Error(`Refusing to open "${url}" - only http and https URLs are allowed.`);
-    const r = await runPowerShell(`Start-Process ${psQuote(url)}`);
+    const r = await platform.openUrl(url);
     await requireOk(r, 'open_url');
     return { url, opened: true };
   },
 
-  async launch_app(args) {
-    const name = String(args.name || '').trim();
-    if (!name) throw new Error('launch_app needs an app name.');
-    const argPart = args.arguments ? ` -ArgumentList ${psQuote(String(args.arguments))}` : '';
-    const candidates = [name, `${name}.exe`];
-    for (const candidate of candidates) {
-      const r = await runPowerShell(`Start-Process ${psQuote(candidate)}${argPart} -ErrorAction Stop`);
-      if (r.ok) return { app: name, launched: true, executable: candidate };
-    }
-    throw new Error(`Could not launch "${name}". Make sure it is installed, or use run_command to install it (for example "winget install <name>").`);
-  },
+  // launch_app is defined properly further down. It used to be defined twice,
+  // and an object literal keeps the last duplicate, so this copy never ran -
+  // it has been removed rather than ported twice.
 
   async close_app(args) {
     const name = String(args.name || '').trim();
@@ -909,41 +821,38 @@ public class W {
    * Finds installed applications by name.
    *
    * Start-Process only resolves things on PATH, which covers almost nothing
-   * that is actually installed, so most "open spotify" attempts failed. This
-   * searches where Windows really keeps programs: the App Paths registry key
-   * (which every installer writes), both Start Menu folders, and Program Files.
+   * that is actually installed, so most "open spotify" attempts failed. Where
+   * programs are really kept is per machine: the App Paths registry key and
+   * Start Menu folders on Windows, .desktop entries on Linux. The search
+   * itself lives in platform/ - the list of places is the whole difference.
    */
   async find_applications(args) {
     const query = String(args.name || '').trim();
     if (!query) throw new Error('find_applications needs a name to look for.');
     const limit = clamp(Number(args.limit ?? 15), 1, 50);
-    const r = await runPowerShell(appSearchScript(query, limit, false), { timeoutMs: 45000 });
-    const found = parseAppMatches(r.stdout);
-    return { query, matches: found, searched: 'Start Menu, App Paths registry, Program Files', count: found.length };
+    const found = await platform.findApplications(query, limit);
+    return { query, matches: found.matches, searched: found.searched, count: found.matches.length };
   },
 
   async launch_app(args) {
     const name = String(args.name || '').trim();
     if (!name) throw new Error('launch_app needs an app name.');
-    const argPart = args.arguments ? ` -ArgumentList ${psQuote(String(args.arguments))}` : '';
 
-    const script = appSearchScript(name, 5, true, argPart);
-    const r = await runPowerShell(script, { timeoutMs: 60000 });
-    const launched = /LAUNCHED:(.+)/.exec(r.stdout || '');
-    if (launched) {
-      return { app: name, launched: true, path: launched[1].trim(), via: 'search' };
+    const res = await platform.launchApplication(name, { arguments: args.arguments, limit: 5 });
+    if (res.launched) {
+      const out = { app: name, launched: true, via: res.via };
+      if (res.path) out.path = res.path;
+      if (res.executable) out.executable = res.executable;
+      return out;
     }
 
-    // Last resort: the shell's own resolution, which handles bare names on PATH.
-    for (const candidate of [name, `${name}.exe`]) {
-      const attempt = await runPowerShell(`Start-Process ${psQuote(candidate)}${argPart} -ErrorAction Stop`);
-      if (attempt.ok) return { app: name, launched: true, executable: candidate, via: 'path' };
-    }
-
-    const matches = parseAppMatches(r.stdout);
+    const matches = res.matches || [];
     const hint = matches.length ? ` Closest matches: ${matches.slice(0, 5).join(', ')}.` : '';
+    const install = platform.isWindows
+      ? 'run_command with a winget install command to install it'
+      : 'run_command with your package manager (apt, dnf, pacman) to install it';
     throw new Error(
-      `Could not find an application called "${name}" on this PC.${hint} Use find_applications to look, or run_command with a winget install command to install it.`
+      `Could not find an application called "${name}" on this PC.${hint} Use find_applications to look, or ${install}.`
     );
   },
 
