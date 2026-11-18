@@ -18,6 +18,11 @@
 const path = require('node:path');
 const { exec, execFile } = require('node:child_process');
 
+// requireOk lives in its own file because a platform module cannot import
+// it from executor.js without the two importing each other.
+const { requireOk } = require('../result');
+const { USER32_CSHARP } = require('./win32');
+
 /**
  * Runs a PowerShell script.
  *
@@ -286,7 +291,119 @@ async function launchApplication(name, { arguments: argv, limit = 5 } = {}) {
   return { launched: false, matches: parseAppMatches(r.stdout) };
 }
 
+/**
+ * The tools whose behaviour *is* the desktop.
+ *
+ * Nothing here is translated: closing, focusing, listing and killing are
+ * defined by this machine, so each platform carries its own copy of the
+ * whole method and executor.js assembles impl from platform.toolImpls.
+ * These were moved as-is - the Windows behaviour is meant to be identical.
+ */
+const toolImpls = {
+  async close_app(args) {
+    const name = String(args.name || '').trim();
+    const script = `$p = Get-Process | Where-Object { $_.ProcessName -like ${psQuote(`*${name}*`)} -or $_.MainWindowTitle -like ${psQuote(`*${name}*`)} };
+if (-not $p) { Write-Output "NOT_FOUND"; exit 0 }
+$n = 0
+foreach ($x in $p) { try { if ($x.MainWindowHandle -ne 0) { $x.CloseMainWindow() | Out-Null; $n++ } else { Stop-Process -Id $x.Id -Force; $n++ } } catch {} }
+Start-Sleep -Milliseconds 900
+Get-Process | Where-Object { $_.ProcessName -like ${psQuote(`*${name}*`)} } | ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} }
+Write-Output ("CLOSED:" + $n)`;
+    const r = await runPowerShell(script, { timeoutMs: 20000 });
+    const closed = /CLOSED:(\d+)/.exec(r.stdout || '');
+    if (/NOT_FOUND/.test(r.stdout || '')) throw new Error(`No running app matching "${name}" was found.`);
+    return { app: name, closed: Number(closed?.[1] || 0) };
+  },
+  async kill_process(args) {
+    const pid = Number(args.pid);
+    if (!Number.isInteger(pid) || pid <= 0) throw new Error('kill_process needs a valid pid.');
+    if (pid === process.pid) throw new Error('Shine refused to kill its own process.');
+    const info = await runPowerShell(`$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.ProcessName`);
+    const name = (info.stdout || '').trim();
+    if (['shinedesktop', 'electron', 'explorer', 'winlogon', 'csrss', 'system', 'services', 'lsass'].includes(name.toLowerCase())) {
+      throw new Error(`Shine refuses to force-end "${name}" because it is a critical Windows process.`);
+    }
+    const r = await runPowerShell(`Stop-Process -Id ${pid} -Force`);
+    await requireOk(r, 'kill_process');
+    return { pid, process: name, killed: true };
+  },
+  async focus_window(args) {
+    const title = String(args.title || '').trim();
+    const script = `${USER32_CSHARP}
+$p = Get-Process | Where-Object { $_.MainWindowTitle -like ${psQuote(`*${title}*`)} } | Select-Object -First 1
+if (-not $p) { Write-Output "NOT_FOUND"; exit 0 }
+[void][Win]::ShowWindow($p.MainWindowHandle, 9)
+Start-Sleep -Milliseconds 120
+[void][Win]::SetForegroundWindow($p.MainWindowHandle)
+Write-Output ("FOCUSED:" + $p.MainWindowTitle)`;
+    const r = await runPowerShell(script, { timeoutMs: 15000 });
+    if (/NOT_FOUND/.test(r.stdout || '')) throw new Error(`No open window title contains "${title}".`);
+    return { title: (r.stdout || '').replace(/^FOCUSED:/, '').trim(), focused: true };
+  },
+  async list_windows() {
+    const script = `Add-Type -Namespace Native -Name Win -MemberDefinition @"
+[DllImport(\\"user32.dll\\")] public static extern bool IsWindowVisible(IntPtr hWnd);
+[DllImport(\\"user32.dll\\")] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder s, int n);
+"@
+$found = @()
+Add-Type @"
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public class W {
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  public static List<string> List() {
+    var res = new List<string>();
+    EnumWindows((h, l) => {
+      if (!IsWindowVisible(h)) return true;
+      var sb = new StringBuilder(512);
+      GetWindowText(h, sb, 512);
+      var t = sb.ToString().Trim();
+      if (t.Length == 0) return true;
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      res.Add(t + "\\t" + pid);
+      return true;
+    }, IntPtr.Zero);
+    return res;
+  }
+}
+"@
+[W]::List() | ForEach-Object { $_ }`;
+    const r = await runPowerShell(script, { timeoutMs: 15000 });
+    const windows = (r.stdout || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [title, pid] = line.split('\t');
+        return { title, pid: Number(pid) };
+      });
+    return { count: windows.length, windows: windows.slice(0, 60) };
+  },
+  async list_processes(args) {
+    const filter = String(args.filter || '').trim().toLowerCase();
+    const script = `Get-Process | Where-Object { $_.ProcessName } | Select-Object Id,ProcessName,@{n='MemoryMB';e={[math]::Round($_.WorkingSet64/1MB,1)}},@{n='Window';e={$_.MainWindowTitle}} | ConvertTo-Json -Compress`;
+    const r = await requireOk(await runPowerShell(script, { timeoutMs: 20000 }), 'list_processes');
+    let rows = [];
+    try {
+      const parsed = JSON.parse(r.stdout || '[]');
+      rows = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      rows = [];
+    }
+    const filtered = filter ? rows.filter((p) => String(p.ProcessName).toLowerCase().includes(filter)) : rows;
+    filtered.sort((a, b) => (b.MemoryMB || 0) - (a.MemoryMB || 0));
+    return { count: filtered.length, processes: filtered.slice(0, 120) };
+  },
+};
+
 module.exports = {
+  toolImpls,
   runCommand,
   runPowerShell,
   runCmd,

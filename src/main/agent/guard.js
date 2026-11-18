@@ -101,7 +101,7 @@ const RISKY_WRITE_DIRS = [
 ];
 
 const DESTRUCTIVE_VERB =
-  /\b(rm|del|erase|remove|remove-item|rmdir|rd|format|diskpart|clear-disk|initialize-disk|uninstall|stop-process|taskkill|takeown|icacls|move-item|mv|rename-item|ren|attrib|shred|mkfs|wipefs|blkdiscard|chown|chmod|truncate|dd)\b/i;
+  /\b(rm|del|erase|remove|remove-item|rmdir|rd|format|diskpart|clear-disk|initialize-disk|uninstall|stop-process|taskkill|kill|pkill|killall|takeown|icacls|move-item|mv|rename-item|ren|attrib|shred|mkfs|wipefs|blkdiscard|chown|chmod|truncate|dd)\b/i;
 
 function stripQuotes(s) {
   return String(s || '').replace(/^["']|["']$/g, '');

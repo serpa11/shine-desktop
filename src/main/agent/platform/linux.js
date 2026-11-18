@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { requireOk } = require('../result');
 
 /**
  * Wraps a command so a failed one reports as a failure.
@@ -312,7 +313,292 @@ async function startDetached(command, argv) {
   return res.ok && /LAUNCHED/.test(res.stdout || '');
 }
 
+/* ------------------------------------------------------------------ */
+/* Processes and windows                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Processes Shine refuses to force-end by name.
+ *
+ * The Windows list lived in executor.js and moved with the tool. These are
+ * the ones that make the same claim here: the session, the display server and
+ * the audio daemon. Kernel threads are deliberately not in the list - see
+ * isProtected, which has to recognise them without knowing their names.
+ */
+const PROTECTED = [
+  'systemd',
+  'init',
+  'kthreadd',
+  'dbus-daemon',
+  'dbus-broker',
+  'sshd',
+  'gdm',
+  'gdm3',
+  'lightdm',
+  'sddm',
+  'xorg',
+  'gnome-shell',
+  'kwin_x11',
+  'plasmashell',
+  'pipewire',
+  'pipewire-pulse',
+  'pulseaudio',
+  'seatd',
+  'logind',
+  'systemd-logind',
+  'shine',
+];
+
+/**
+ * Reads a process's name without the kernel's fifteen-character cap.
+ *
+ * /proc/<pid>/comm is truncated by the kernel, which is fine for "firefox"
+ * but turns "xdg-desktop-portal" into something the user then cannot search
+ * for. The exe symlink has no such limit, so it is tried first and comm is
+ * the fallback for a process that will not say what it is - a zombie, or one
+ * belonging to somebody else.
+ *
+ * @param {number} pid
+ * @param {string} [procDir] overridable so tests need no /proc
+ */
+function procName(pid, procDir = '/proc') {
+  try {
+    return path.basename(fs.readlinkSync(path.join(procDir, String(Number(pid)), 'exe')));
+  } catch {
+    /* not readable, or not there */
+  }
+  try {
+    return fs.readFileSync(path.join(procDir, String(Number(pid)), 'comm'), 'utf8').trim();
+  } catch {
+    /* gone */
+  }
+  return '';
+}
+
+/** Every process, as {pid, name}. */
+function processNames(procDir = '/proc') {
+  const out = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(procDir);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const name = procName(Number(entry), procDir);
+    if (name) out.push({ pid: Number(entry), name });
+  }
+  return out;
+}
+
+/**
+ * Whether force-ending this would take the machine with it.
+ *
+ * The name list answers first. The second answer is a kernel thread, which
+ * has an empty cmdline - pid 3 and 4 are always kernel threads, but their
+ * names change with every kernel and configuration, so matching on the number
+ * would be wrong. cmdline is world readable, so this also works for processes
+ * belonging to anyone else; a process whose cmdline cannot be read at all is
+ * left for the kill to reject rather than refused here for the wrong reason.
+ */
+function isProtected(pid, name, procDir = '/proc') {
+  if (PROTECTED.includes(String(name || '').toLowerCase())) return true;
+  try {
+    return fs.readFileSync(path.join(procDir, String(Number(pid)), 'cmdline'), 'utf8').length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function procAlive(pid, procDir = '/proc') {
+  return fs.existsSync(path.join(procDir, String(Number(pid))));
+}
+
+/**
+ * Parses `ps -eo pid=,rss=` output.
+ *
+ * ps reports memory in kilobytes while /proc reports it in pages, and Node
+ * has no portable way to ask how big a page is - guessing would silently
+ * scale every number in the list. That is why ps supplies the memory and
+ * /proc supplies only the names.
+ */
+function parsePsRss(stdout) {
+  const rows = [];
+  for (const line of String(stdout || '').split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (!m) continue;
+    rows.push({ pid: Number(m[1]), kb: Number(m[2]) });
+  }
+  return rows;
+}
+
+function isWayland() {
+  return process.env.XDG_SESSION_TYPE === 'wayland' || Boolean(process.env.WAYLAND_DISPLAY);
+}
+
+/**
+ * Lists every visible window, or says why there are none.
+ *
+ * xdotool talks to the X server directly, which is why it cannot see a
+ * Wayland session's windows at all. That is reported rather than quietly
+ * returning an empty list, because "there are no windows" and "the display
+ * server will not show them to me" are identical to everything downstream -
+ * and the difference is the entire answer to "why can it not find my
+ * window?".
+ *
+ * stderr is deliberately not suppressed on the search: with no X server the
+ * command still exits successfully with no output, and the error it wrote is
+ * the only thing that says so.
+ */
+const WINDOW_SCAN = [
+  "command -v xdotool >/dev/null 2>&1 || { echo 'NO_XDOTOOL'; exit 127; }",
+  "for id in $(xdotool search --onlyvisible --name '.*'); do",
+  '  title=$(xdotool getwindowname "$id" 2>/dev/null) || continue',
+  '  [ -n "$title" ] || continue',
+  '  pid=$(xdotool getwindowpid "$id" 2>/dev/null || echo 0)',
+  "  printf '%s\\t%s\\t%s\\n' \"$id\" \"$pid\" \"$title\"",
+  'done',
+].join('\n');
+
+async function scanWindows() {
+  const res = await runCommand(WINDOW_SCAN, { timeoutMs: 20000 });
+  if (/NO_XDOTOOL/.test(res.stdout || '')) return { ok: false, reason: 'xdotool' };
+
+  const windows = [];
+  for (const line of String(res.stdout || '').split('\n')) {
+    if (!line) continue;
+    const [id, pid, ...rest] = line.split('\t');
+    const title = rest.join('\t').trim();
+    if (!id || !title) continue;
+    windows.push({ id, pid: Number(pid) || 0, title });
+  }
+
+  if (windows.length > 0) return { ok: true, windows };
+  if (isWayland()) return { ok: false, reason: 'wayland' };
+  const detail = String(res.stderr || res.stdout || '').trim();
+  if (detail) return { ok: false, reason: 'failed', detail };
+  return { ok: true, windows };
+}
+
+/** The message for a window listing that cannot work here. */
+function windowsUnavailable(scan) {
+  if (scan.reason === 'xdotool') {
+    return 'xdotool is not installed, so Shine cannot see this desktop\'s windows. Install it with "sudo apt install xdotool" (or "sudo dnf install xdotool"), then ask again.';
+  }
+  if (scan.reason === 'wayland') {
+    return 'This is a Wayland session, and xdotool can only see X11 windows - so Shine cannot list or focus windows here. Choosing "Ubuntu on Xorg" or "GNOME on Xorg" at the sign-in screen switches to a session it can drive.';
+  }
+  return `Could not list windows${scan.detail ? `: ${String(scan.detail).slice(0, 400)}` : ''}.`;
+}
+
+/**
+ * The tools whose behaviour *is* the desktop.
+ *
+ * The counterpart of windows.js's toolImpls. Nothing here is translated from
+ * Windows: what closing, focusing, listing and killing mean is defined by
+ * this machine, so each side carries its own copy of the whole method and
+ * executor.js assembles impl from platform.toolImpls.
+ */
+const toolImpls = {
+  async close_app(args) {
+    const name = String(args.name || '').trim();
+    const needle = name.toLowerCase();
+    const matches = processNames().filter((p) => p.name.toLowerCase().includes(needle));
+    if (matches.length === 0) throw new Error(`No running app matching "${name}" was found.`);
+
+    // Not our own process: asking "close shine" should not be a way to end
+    // the session mid-answer.
+    const pids = matches.map((p) => p.pid).filter((pid) => pid !== process.pid);
+    if (pids.length === 0) return { app: name, closed: 0 };
+
+    // SIGTERM first - it is the same message the title bar's close button
+    // sends, so an app with unsaved work still gets its chance to ask.
+    await runCommand(`kill ${pids.join(' ')}`, { timeoutMs: 10000 });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+
+    // And then insist, for the ones that ignored it.
+    const survivors = pids.filter((pid) => procAlive(pid));
+    if (survivors.length) await runCommand(`kill -9 ${survivors.join(' ')}`, { timeoutMs: 10000 });
+
+    return { app: name, closed: pids.length };
+  },
+
+  async kill_process(args) {
+    const pid = Number(args.pid);
+    if (!Number.isInteger(pid) || pid <= 0) throw new Error('kill_process needs a valid pid.');
+    if (pid === process.pid) throw new Error('Shine refused to kill its own process.');
+
+    const name = procName(pid);
+    if (isProtected(pid, name)) {
+      throw new Error(`Shine refuses to force-end "${name}" because it is a critical Linux process.`);
+    }
+
+    const r = await runCommand(`kill -9 ${pid}`, { timeoutMs: 10000 });
+    await requireOk(r, 'kill_process');
+    return { pid, process: name, killed: true };
+  },
+
+  async focus_window(args) {
+    const title = String(args.title || '').trim();
+    const scan = await scanWindows();
+    if (!scan.ok) throw new Error(windowsUnavailable(scan));
+
+    const match = scan.windows.find((w) => w.title.toLowerCase().includes(title.toLowerCase()));
+    if (!match) throw new Error(`No open window title contains "${title}".`);
+
+    const r = await runCommand(`xdotool windowactivate --sync ${shellQuote(match.id)}`, { timeoutMs: 10000 });
+    if (!r.ok) {
+      throw new Error(`Could not focus "${match.title}": ${String(r.stderr || r.stdout || 'xdotool failed').slice(0, 400)}`);
+    }
+    return { title: match.title, focused: true };
+  },
+
+  async list_windows() {
+    const scan = await scanWindows();
+    if (!scan.ok) throw new Error(windowsUnavailable(scan));
+    const windows = scan.windows.map(({ pid, title }) => ({ title, pid }));
+    return { count: windows.length, windows: windows.slice(0, 60) };
+  },
+
+  async list_processes(args) {
+    const filter = String(args.filter || '').trim().toLowerCase();
+    const rows = await processRows();
+    const filtered = filter ? rows.filter((p) => String(p.ProcessName).toLowerCase().includes(filter)) : rows;
+    filtered.sort((a, b) => (b.MemoryMB || 0) - (a.MemoryMB || 0));
+    return { count: filtered.length, processes: filtered.slice(0, 120) };
+  },
+};
+
+/**
+ * Every process with the four fields Windows reports.
+ *
+ * The field names match Windows exactly because they are what the tool's
+ * description promises the model; renaming them per platform would make the
+ * same prompt mean two different things.
+ */
+async function processRows(procDir = '/proc') {
+  const res = await runCommand('ps -eo pid=,rss=', { timeoutMs: 20000 });
+  await requireOk(res, 'list_processes');
+
+  const titles = new Map();
+  const scan = await scanWindows();
+  if (scan.ok) {
+    for (const w of scan.windows) {
+      if (w.pid && !titles.has(w.pid)) titles.set(w.pid, w.title);
+    }
+  }
+
+  return parsePsRss(res.stdout).map(({ pid, kb }) => ({
+    Id: pid,
+    ProcessName: procName(pid, procDir) || `pid ${pid}`,
+    MemoryMB: Math.round((kb / 1024) * 10) / 10,
+    Window: titles.get(pid) || '',
+  }));
+}
+
 module.exports = {
+  toolImpls,
   runCommand,
   shWrapper,
   shellQuote,
@@ -327,4 +613,14 @@ module.exports = {
   openPath,
   openUrl,
   launchApplication,
+  // Exported for the tests: these are the parts that can be pinned without a
+  // display, a shell or a running system.
+  procName,
+  processNames,
+  isProtected,
+  parsePsRss,
+  isWayland,
+  scanWindows,
+  windowsUnavailable,
+  processRows,
 };

@@ -171,6 +171,82 @@ section('Linux: shell choice');
 
   fs.rmSync(menu, { recursive: true, force: true });
 
+  section('Linux: the desktop tools');
+
+  check(
+    'all five desktop tools are provided',
+    ['close_app', 'kill_process', 'focus_window', 'list_windows', 'list_processes'].every(
+      (k) => typeof linux.toolImpls[k] === 'function'
+    ),
+    Object.keys(linux.toolImpls).join(',')
+  );
+
+  section('Linux: reading the process table');
+
+  const proc = fs.mkdtempSync(path.join(os.tmpdir(), 'shine-proc-'));
+  fs.mkdirSync(path.join(proc, '101'));
+  fs.writeFileSync(path.join(proc, '101', 'comm'), 'mytool');
+  fs.writeFileSync(path.join(proc, '101', 'cmdline'), 'mytool\0--flag');
+  // Symlink creation needs privileges on Windows, and procName falls back to
+  // comm when it is refused - so both paths end at the same name and the
+  // assertion holds either way.
+  try {
+    fs.symlinkSync('/usr/bin/mytool', path.join(proc, '101', 'exe'));
+  } catch {
+    /* no symlinks here; comm answers instead */
+  }
+
+  fs.mkdirSync(path.join(proc, '102'));
+  fs.writeFileSync(path.join(proc, '102', 'comm'), 'kthreadd');
+  fs.writeFileSync(path.join(proc, '102', 'cmdline'), ''); // a kernel thread says nothing
+
+  check('a process name is read', linux.procName(101, proc) === 'mytool', linux.procName(101, proc));
+  check('a process with no exe link still names itself', linux.procName(102, proc) === 'kthreadd', linux.procName(102, proc));
+  check('a process that is gone has no name', linux.procName(999999, proc) === '');
+
+  const table = linux
+    .processNames(proc)
+    .map((p) => p.pid)
+    .sort((a, b) => a - b);
+  check('every process in the table is listed', JSON.stringify(table) === '[101,102]', JSON.stringify(table));
+
+  check('a named critical process is protected', linux.isProtected(101, 'systemd', proc) === true);
+  check('a kernel thread is protected by its empty cmdline', linux.isProtected(102, 'kthreadd', proc) === true);
+  check('an ordinary process is not protected', linux.isProtected(101, 'mytool', proc) === false);
+  check('an unreadable process is left for the kill to reject', linux.isProtected(999999, '', proc) === false);
+  fs.rmSync(proc, { recursive: true, force: true });
+
+  const psRows = linux.parsePsRss('  123     45678\n   456\t900\nnot a row\n\n');
+  check('a pid and its kilobytes are read', JSON.stringify(psRows) === '[{"pid":123,"kb":45678},{"pid":456,"kb":900}]', JSON.stringify(psRows));
+  check('junk rows are skipped', psRows.length === 2, JSON.stringify(psRows));
+  check('no output parses to no rows', linux.parsePsRss('').length === 0);
+
+  section('Linux: why a window listing failed');
+
+  const savedWayland = process.env.WAYLAND_DISPLAY;
+  const savedType = process.env.XDG_SESSION_TYPE;
+  delete process.env.WAYLAND_DISPLAY;
+  delete process.env.XDG_SESSION_TYPE;
+  check('an ordinary session is not read as Wayland', linux.isWayland() === false);
+  process.env.XDG_SESSION_TYPE = 'wayland';
+  check('a Wayland session is recognised', linux.isWayland() === true);
+  delete process.env.XDG_SESSION_TYPE;
+  process.env.WAYLAND_DISPLAY = 'wayland-0';
+  check('a Wayland display is recognised', linux.isWayland() === true);
+  if (savedWayland === undefined) delete process.env.WAYLAND_DISPLAY;
+  else process.env.WAYLAND_DISPLAY = savedWayland;
+  if (savedType === undefined) delete process.env.XDG_SESSION_TYPE;
+  else process.env.XDG_SESSION_TYPE = savedType;
+
+  const missingTool = linux.windowsUnavailable({ reason: 'xdotool' });
+  check('a missing xdotool says how to install it', /apt install xdotool|dnf install xdotool/.test(missingTool), missingTool);
+
+  const onWayland = linux.windowsUnavailable({ reason: 'wayland' });
+  check('a Wayland session explains it and offers a way out', /Wayland/.test(onWayland) && /Xorg/.test(onWayland), onWayland);
+
+  const failDetail = linux.windowsUnavailable({ reason: 'failed', detail: 'Error: no display' });
+  check('a failure carries the detail through', failDetail.includes('no display'), failDetail);
+
   section('Linux: what runCommand reports');
 
   // Only what runCommand() *reports* is asserted. Whether sh actually exists

@@ -10,6 +10,7 @@ const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 
 const { TOOL_MAP, normaliseArgs } = require('./tools');
+const { requireOk } = require('./result');
 
 /**
  * Everything that depends on which machine this is runs in platform/.
@@ -76,14 +77,6 @@ const WINDOWS_SETTINGS = {
   compact_start: { group: 'features', kind: 'reg', key: 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced', name: 'Start_TrackDocs', type: 'dword', description: 'Show recently opened items in Start and Explorer.' },
 };
 
-
-async function requireOk(result, label) {
-  if (!result.ok) {
-    const detail = result.stderr || result.stdout || `exit code ${result.code}`;
-    throw new Error(`${label} failed: ${detail.slice(0, 1200)}`);
-  }
-  return result;
-}
 
 /* ------------------------------------------------------------------ */
 /* Formatting helpers                                                 */
@@ -152,26 +145,12 @@ public static class Audio {
 }
 `;
 
-const USER32_CSHARP = `
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class Win {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
-  [DllImport("user32.dll")] public static extern IntPtr FindWindow(string c, string n);
-  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
-  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, IntPtr e);
-  [DllImport("user32.dll")] public static extern short VkKeyScan(char c);
-  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
-  public const uint LEFTDOWN = 0x0002, LEFTUP = 0x0004;
-  public const uint RIGHTDOWN = 0x0008, RIGHTUP = 0x0010;
-  public const uint MIDDLEDOWN = 0x0020, MIDDLEUP = 0x0040;
-  public const uint WHEEL = 0x0800, MOVE = 0x0001, ABSOLUTE = 0x8000;
-}
-`;
+/**
+ * The user32 declarations. Extracted into platform/win32.js so that both
+ * this file and the moved focus_window share one copy - see that module for
+ * why it is not simply imported from platform/.
+ */
+const { USER32_CSHARP } = require('./platform/win32');
 
 /** Reads the mouse pointer position, for confirming where a move landed. */
 const GET_CURSOR_PS = `
@@ -229,6 +208,7 @@ ${steps.join('\n')}`;
 /* ------------------------------------------------------------------ */
 
 const impl = {
+  ...platform.toolImpls,
   async system_info() {
     const disk = await fsp.statfs(os.homedir()).catch(() => null);
     let drives = 'unavailable';
@@ -493,34 +473,7 @@ const impl = {
   // and an object literal keeps the last duplicate, so this copy never ran -
   // it has been removed rather than ported twice.
 
-  async close_app(args) {
-    const name = String(args.name || '').trim();
-    const script = `$p = Get-Process | Where-Object { $_.ProcessName -like ${psQuote(`*${name}*`)} -or $_.MainWindowTitle -like ${psQuote(`*${name}*`)} };
-if (-not $p) { Write-Output "NOT_FOUND"; exit 0 }
-$n = 0
-foreach ($x in $p) { try { if ($x.MainWindowHandle -ne 0) { $x.CloseMainWindow() | Out-Null; $n++ } else { Stop-Process -Id $x.Id -Force; $n++ } } catch {} }
-Start-Sleep -Milliseconds 900
-Get-Process | Where-Object { $_.ProcessName -like ${psQuote(`*${name}*`)} } | ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} }
-Write-Output ("CLOSED:" + $n)`;
-    const r = await runPowerShell(script, { timeoutMs: 20000 });
-    const closed = /CLOSED:(\d+)/.exec(r.stdout || '');
-    if (/NOT_FOUND/.test(r.stdout || '')) throw new Error(`No running app matching "${name}" was found.`);
-    return { app: name, closed: Number(closed?.[1] || 0) };
-  },
 
-  async kill_process(args) {
-    const pid = Number(args.pid);
-    if (!Number.isInteger(pid) || pid <= 0) throw new Error('kill_process needs a valid pid.');
-    if (pid === process.pid) throw new Error('Shine refused to kill its own process.');
-    const info = await runPowerShell(`$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.ProcessName`);
-    const name = (info.stdout || '').trim();
-    if (['shinedesktop', 'electron', 'explorer', 'winlogon', 'csrss', 'system', 'services', 'lsass'].includes(name.toLowerCase())) {
-      throw new Error(`Shine refuses to force-end "${name}" because it is a critical Windows process.`);
-    }
-    const r = await runPowerShell(`Stop-Process -Id ${pid} -Force`);
-    await requireOk(r, 'kill_process');
-    return { pid, process: name, killed: true };
-  },
 
   async move_cursor(args) {
     const x = Number(args.x);
@@ -679,81 +632,8 @@ Write-Output "TYPED"`;
     return { keys, sent: true };
   },
 
-  async focus_window(args) {
-    const title = String(args.title || '').trim();
-    const script = `${USER32_CSHARP}
-$p = Get-Process | Where-Object { $_.MainWindowTitle -like ${psQuote(`*${title}*`)} } | Select-Object -First 1
-if (-not $p) { Write-Output "NOT_FOUND"; exit 0 }
-[void][Win]::ShowWindow($p.MainWindowHandle, 9)
-Start-Sleep -Milliseconds 120
-[void][Win]::SetForegroundWindow($p.MainWindowHandle)
-Write-Output ("FOCUSED:" + $p.MainWindowTitle)`;
-    const r = await runPowerShell(script, { timeoutMs: 15000 });
-    if (/NOT_FOUND/.test(r.stdout || '')) throw new Error(`No open window title contains "${title}".`);
-    return { title: (r.stdout || '').replace(/^FOCUSED:/, '').trim(), focused: true };
-  },
 
-  async list_windows() {
-    const script = `Add-Type -Namespace Native -Name Win -MemberDefinition @"
-[DllImport(\\"user32.dll\\")] public static extern bool IsWindowVisible(IntPtr hWnd);
-[DllImport(\\"user32.dll\\")] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder s, int n);
-"@
-$found = @()
-Add-Type @"
-using System;
-using System.Text;
-using System.Collections.Generic;
-using System.Runtime.InteropServices;
-public class W {
-  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
-  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-  [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-  delegate bool EnumProc(IntPtr h, IntPtr l);
-  public static List<string> List() {
-    var res = new List<string>();
-    EnumWindows((h, l) => {
-      if (!IsWindowVisible(h)) return true;
-      var sb = new StringBuilder(512);
-      GetWindowText(h, sb, 512);
-      var t = sb.ToString().Trim();
-      if (t.Length == 0) return true;
-      uint pid; GetWindowThreadProcessId(h, out pid);
-      res.Add(t + "\\t" + pid);
-      return true;
-    }, IntPtr.Zero);
-    return res;
-  }
-}
-"@
-[W]::List() | ForEach-Object { $_ }`;
-    const r = await runPowerShell(script, { timeoutMs: 15000 });
-    const windows = (r.stdout || '')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [title, pid] = line.split('\t');
-        return { title, pid: Number(pid) };
-      });
-    return { count: windows.length, windows: windows.slice(0, 60) };
-  },
 
-  async list_processes(args) {
-    const filter = String(args.filter || '').trim().toLowerCase();
-    const script = `Get-Process | Where-Object { $_.ProcessName } | Select-Object Id,ProcessName,@{n='MemoryMB';e={[math]::Round($_.WorkingSet64/1MB,1)}},@{n='Window';e={$_.MainWindowTitle}} | ConvertTo-Json -Compress`;
-    const r = await requireOk(await runPowerShell(script, { timeoutMs: 20000 }), 'list_processes');
-    let rows = [];
-    try {
-      const parsed = JSON.parse(r.stdout || '[]');
-      rows = Array.isArray(parsed) ? parsed : [parsed];
-    } catch {
-      rows = [];
-    }
-    const filtered = filter ? rows.filter((p) => String(p.ProcessName).toLowerCase().includes(filter)) : rows;
-    filtered.sort((a, b) => (b.MemoryMB || 0) - (a.MemoryMB || 0));
-    return { count: filtered.length, processes: filtered.slice(0, 120) };
-  },
 
   async take_screenshot() {
     // Loaded lazily so the module stays usable outside Electron.
