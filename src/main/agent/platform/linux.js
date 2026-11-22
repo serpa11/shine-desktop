@@ -14,10 +14,12 @@
  */
 
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { requireOk } = require('../result');
+const { clamp, resolvePath } = require('../util');
 
 /**
  * Wraps a command so a failed one reports as a failure.
@@ -632,6 +634,51 @@ async function openTerminal() {
   return null;
 }
 
+/* ------------------------------------------------------------------ */
+/* Audio                                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * wpctl's `Volume: 0.50 [MUTED]` line.
+ *
+ * WirePlumber speaks in fractions, Windows speaks in percent, and Shine
+ * reports percent everywhere, so the conversion happens here rather than in
+ * three call sites.
+ */
+function parseWpctlVolume(stdout) {
+  const m = /^Volume:\s*([0-9.]+)/m.exec(String(stdout || ''));
+  if (!m) return null;
+  return { level: Math.min(100, Math.round(Number(m[1]) * 100)), muted: /\[MUTED\]/i.test(String(stdout)) };
+}
+
+/**
+ * pactl's `front-left: 32768 / 50% / -18.75 dB` line.
+ *
+ * pactl prints one line per channel; the first percentage is the one, since
+ * a balance-shifted pair still agrees on the average a user would mean.
+ */
+function parsePactlVolume(stdout) {
+  const m = /\/\s*(\d+)%/.exec(String(stdout || ''));
+  if (!m) return null;
+  return { level: Math.min(100, Number(m[1])), muted: false };
+}
+
+/**
+ * Which volume tool this machine has.
+ *
+ * wpctl is WirePlumber (the default on any current distribution), pactl is
+ * PulseAudio (still common, and what PipeWire's compatibility layer answers
+ * to). ALSA's amixer is left out deliberately: it has no notion of a default
+ * sink, so on a machine with two cards it would guess.
+ */
+async function audioBackend() {
+  for (const bin of ['wpctl', 'pactl']) {
+    const r = await runCommand(`command -v ${bin} >/dev/null 2>&1`, { timeoutMs: 5000 });
+    if (r.ok) return bin;
+  }
+  return null;
+}
+
 /**
  * The tools whose behaviour *is* the desktop.
  *
@@ -823,6 +870,134 @@ const toolImpls = {
     await requireOk(await runCommand(`xdotool key --clearmodifiers ${list}`, { timeoutMs: 15000 }), 'press_keys');
     return { keys, sent: true };
   },
+
+  async delete_path(args) {
+    const target = resolvePath(args.path);
+    const st = await fsp.lstat(target).catch(() => null);
+    if (!st) throw new Error(`Nothing to delete at ${target}`);
+
+    if (!args.permanent) {
+      // gio trash is the freedesktop standard that GNOME, KDE and XFCE all
+      // answer to; trash-put is the older standalone tool some setups still
+      // ship. Either way the file comes back with undo, which is the point -
+      // and like the Windows side, a trash that is not available falls
+      // through to a permanent delete rather than refusing the request.
+      const res = await runCommand(`gio trash ${shellQuote(target)} 2>/dev/null || trash-put ${shellQuote(target)}`, {
+        timeoutMs: 30000,
+      });
+      if (res.ok) return { path: target, deleted: true, permanent: false, note: 'Moved to the trash.' };
+    }
+
+    await fsp.rm(target, { recursive: true, force: true });
+    return { path: target, deleted: true, permanent: true, note: 'Permanently deleted.' };
+  },
+
+  async run_script_file(args) {
+    const file = String(args.path || '').trim();
+    if (!file) throw new Error('run_script_file needs a path to a .sh file.');
+    if (!fs.existsSync(file)) throw new Error(`That script does not exist: ${file}`);
+    const ext = path.extname(file).toLowerCase();
+    if (!['.sh', '.bash'].includes(ext)) {
+      throw new Error(`run_script_file only runs .sh and .bash files, not "${ext}".`);
+    }
+    // bash rather than sh: a script asking to be run is asking for the shell
+    // it was written for, and bash is what every .sh on a desktop assumes.
+    // The file does not need to be executable - the interpreter is named
+    // rather than invoked - which is what makes a downloaded script run.
+    const r = await runCommand(`bash ${shellQuote(file)}`, { timeoutMs: 120000 });
+    return {
+      path: file,
+      exitCode: r.code,
+      ok: r.ok,
+      stdout: String(r.stdout || '').slice(0, 4000),
+      stderr: String(r.stderr || '').slice(0, 2000),
+    };
+  },
+
+  async get_volume() {
+    const backend = await audioBackend();
+    if (backend === 'wpctl') {
+      const r = await runCommand('wpctl get-volume @DEFAULT_AUDIO_SINK@', { timeoutMs: 15000 });
+      if (!r.ok) throw new Error(`Could not read the volume: ${r.stderr || r.stdout}`);
+      const v = parseWpctlVolume(r.stdout);
+      if (!v) throw new Error(`Could not read the volume: ${r.stdout || 'no output'}`);
+      return v;
+    }
+    if (backend === 'pactl') {
+      const vol = await runCommand('pactl get-sink-volume @DEFAULT_SINK@', { timeoutMs: 15000 });
+      if (!vol.ok) throw new Error(`Could not read the volume: ${vol.stderr || vol.stdout}`);
+      const v = parsePactlVolume(vol.stdout);
+      if (!v) throw new Error(`Could not read the volume: ${vol.stdout || 'no output'}`);
+      const mute = await runCommand('pactl get-sink-mute @DEFAULT_SINK@', { timeoutMs: 15000 });
+      return { level: v.level, muted: mute.ok ? /\byes\b/i.test(mute.stdout) : false };
+    }
+    throw new Error('No volume control was found. Install wireplumber (wpctl) or pulseaudio-utils (pactl).');
+  },
+
+  async set_volume(args) {
+    const hasLevel = typeof args.level === 'number' && !Number.isNaN(args.level);
+    const hasMute = typeof args.mute === 'boolean';
+    if (!hasLevel && !hasMute) throw new Error('set_volume needs a level (0-100) or a mute flag.');
+
+    const backend = await audioBackend();
+    if (!backend) throw new Error('No volume control was found. Install wireplumber (wpctl) or pulseaudio-utils (pactl).');
+
+    const steps = [];
+    if (hasLevel) {
+      const level = clamp(Math.round(args.level), 0, 100);
+      // wpctl takes a fraction and pactl a percentage; each is given the
+      // spelling it documents rather than one guessed to work on both.
+      steps.push(
+        backend === 'wpctl'
+          ? `wpctl set-volume @DEFAULT_AUDIO_SINK@ ${(level / 100).toFixed(2)}`
+          : `pactl set-sink-volume @DEFAULT_SINK@ ${level}%`
+      );
+    }
+    if (hasMute) {
+      steps.push(
+        backend === 'wpctl'
+          ? `wpctl set-mute @DEFAULT_AUDIO_SINK@ ${args.mute ? '1' : '0'}`
+          : `pactl set-sink-mute @DEFAULT_SINK@ ${args.mute ? '1' : '0'}`
+      );
+    }
+
+    await requireOk(await runCommand(steps.join('\n'), { timeoutMs: 20000 }), 'set_volume');
+    return hasLevel ? { level: clamp(Math.round(args.level), 0, 100) } : { mute: args.mute };
+  },
+
+  async system_power(args) {
+    const action = String(args.action || '').toLowerCase();
+    const delay = clamp(Number(args.delaySeconds ?? 15), 0, 300);
+    const grace = delay > 0 ? `sleep ${delay}\n` : '';
+
+    // Each action tries its commands in order until one is understood, which
+    // is how a machine is met halfway: loginctl on a systemd session, the
+    // desktop's own logout on GNOME, systemctl for the two that have no
+    // desktop-specific spelling worth preferring.
+    const ACTIONS = {
+      lock: {
+        cmds: ['loginctl lock-session', 'xdg-screensaver lock', 'gnome-screensaver-command -l'],
+        note: 'The PC locks when the timer finishes.',
+      },
+      signout: {
+        cmds: ['gnome-session-quit --logout --no-prompt', 'loginctl terminate-session "$XDG_SESSION_ID"'],
+        note: 'Sign-out was requested.',
+      },
+      sleep: { cmds: ['systemctl suspend'], note: null },
+      restart: { cmds: ['systemctl reboot'], note: 'Shutting down. Everything open will close.' },
+      shutdown: { cmds: ['systemctl poweroff'], note: 'Shutting down. Everything open will close.' },
+    };
+
+    const plan = ACTIONS[action];
+    if (!plan) throw new Error(`Unknown power action "${action}".`);
+
+    const r = await runCommand(`${grace}${plan.cmds.join(' || ')}`, { timeoutMs: (delay + 20) * 1000 });
+    if (!r.ok) throw new Error(`Could not ${action}: ${r.stderr || r.stdout}`);
+
+    const out = { action, delaySeconds: delay };
+    if (plan.note) out.note = plan.note;
+    return out;
+  },
 };
 
 /**
@@ -883,4 +1058,7 @@ module.exports = {
   translateChunk,
   TERMINALS,
   openTerminal,
+  parseWpctlVolume,
+  parsePactlVolume,
+  audioBackend,
 };

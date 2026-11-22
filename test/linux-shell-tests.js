@@ -285,6 +285,58 @@ section('Linux: shell choice');
   const badShell = await linux.toolImpls.type_command({ command: 'ls', shell: 'cmd' }).catch((e) => e);
   check('type_command refuses a Windows shell name', badShell instanceof Error && /bash/.test(badShell.message), String(badShell));
 
+  section('Linux: files, scripts, audio and power');
+
+  check(
+    'the five system tools are provided',
+    ['delete_path', 'run_script_file', 'get_volume', 'set_volume', 'system_power'].every(
+      (k) => typeof linux.toolImpls[k] === 'function'
+    ),
+    Object.keys(linux.toolImpls).join(',')
+  );
+
+  check(
+    'wpctl volume and mute are read',
+    JSON.stringify(linux.parseWpctlVolume('Volume: 0.70 [MUTED]\n')) === '{"level":70,"muted":true}',
+    JSON.stringify(linux.parseWpctlVolume('Volume: 0.70 [MUTED]\n'))
+  );
+  check(
+    'a boosted wpctl level still caps at 100',
+    linux.parseWpctlVolume('Volume: 1.50').level === 100,
+    String(linux.parseWpctlVolume('Volume: 1.50').level)
+  );
+  check('wpctl without a mute flag is unmuted', linux.parseWpctlVolume('Volume: 0.25').muted === false);
+  check('wpctl output that is not a volume reads as null', linux.parseWpctlVolume('nope') === null);
+  check(
+    'pactl takes the first channel percentage',
+    JSON.stringify(linux.parsePactlVolume('Volume: front-left: 45875 / 70% / -9.50 dB, front-right: 45875 / 70% / -9.50 dB')) ===
+      '{"level":70,"muted":false}',
+    JSON.stringify(linux.parsePactlVolume('Volume: front-left: 45875 / 70% / -9.50 dB'))
+  );
+  check('pactl output that is not a volume reads as null', linux.parsePactlVolume('') === null);
+
+  // Each of these rejects before a single process is spawned, which is what
+  // lets them run on a machine with neither xdotool nor a sound card.
+  const gone = await linux.toolImpls
+    .delete_path({ path: path.join(os.tmpdir(), 'shine-no-such-file-' + Date.now()) })
+    .catch((e) => e);
+  check('delete_path refuses a path that is not there', gone instanceof Error && /Nothing to delete/.test(gone.message), String(gone));
+
+  const wrongExtPath = path.join(os.tmpdir(), 'shine-wrong-ext.txt');
+  fs.writeFileSync(wrongExtPath, 'not a script');
+  const wrongExt = await linux.toolImpls.run_script_file({ path: wrongExtPath }).catch((e) => e);
+  fs.rmSync(wrongExtPath, { force: true });
+  check('run_script_file refuses another extension', wrongExt instanceof Error && /\.sh/.test(wrongExt.message), String(wrongExt));
+
+  const noVolumeArg = await linux.toolImpls.set_volume({}).catch((e) => e);
+  check('set_volume needs a level or a mute flag', noVolumeArg instanceof Error && /level \(0-100\)/.test(noVolumeArg.message), String(noVolumeArg));
+
+  const badPower = await linux.toolImpls.system_power({ action: 'hibernate-ish' }).catch((e) => e);
+  check('system_power refuses an unknown action', badPower instanceof Error && /Unknown power action/.test(badPower.message), String(badPower));
+
+  const missingScript = await linux.toolImpls.run_script_file({ path: path.join(os.tmpdir(), 'nope.sh') }).catch((e) => e);
+  check('run_script_file refuses a missing script', missingScript instanceof Error && /does not exist/.test(missingScript.message), String(missingScript));
+
   section('Linux: what runCommand reports');
 
   // Only what runCommand() *reports* is asserted. Whether sh actually exists

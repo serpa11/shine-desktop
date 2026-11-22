@@ -368,6 +368,47 @@ section('Executor: applications and appearance');
   const missingScript = await execute('run_script_file', { path: path.join(os.tmpdir(), 'nope.ps1') });
   check('run_script_file refuses a missing script', !missingScript.ok, missingScript.error);
 
+  const scriptPath = path.join(os.tmpdir(), 'shine-script-test.bat');
+  fs.writeFileSync(scriptPath, '@echo off\r\necho SCRIPT-OUTPUT\r\n');
+  const ran = await execute('run_script_file', { path: scriptPath });
+  check('run_script_file runs a real script', ran.ok && /SCRIPT-OUTPUT/.test(ran.output?.stdout || ''), ran.error || ran.output?.stdout);
+  fs.rmSync(scriptPath, { force: true });
+
+  const wrongExt = path.join(os.tmpdir(), 'shine-script-test.txt');
+  fs.writeFileSync(wrongExt, 'not a script');
+  const refused = await execute('run_script_file', { path: wrongExt });
+  check('run_script_file refuses another extension', !refused.ok && /\.bat/.test(refused.error || ''), refused.error);
+  fs.rmSync(wrongExt, { force: true });
+
+  const noVolumeArg = await execute('set_volume', {});
+  check('set_volume needs a level or a mute flag', !noVolumeArg.ok && /level \(0-100\)/.test(noVolumeArg.error || ''), noVolumeArg.error);
+
+  const badPower = await execute('system_power', { action: 'hibernate-ish' });
+  check('system_power refuses an unknown action', !badPower.ok && /Unknown power action/.test(badPower.error || ''), badPower.error);
+
+  // IAudioEndpointVolume is a vtable map: the placeholders between the named
+  // methods are the whole correctness argument, and miscounting them does not
+  // fail loudly - the wrong method answers with E_INVALIDARG, which is how
+  // get_volume used to report "Value does not fall within the expected
+  // range" while still looking like a working tool. The layout was settled
+  // against a real machine rather than the header, because the header order
+  // disagrees with it: GetMasterVolumeLevelScalar belongs at slot 9, and the
+  // mute pair at 14 and 15.
+  const iface = /interface IAudioEndpointVolume \{([\s\S]*?)\n\}/.exec(
+    require('../src/main/agent/platform/win32').CORE_AUDIO_CSHARP
+  );
+  const slots = {};
+  if (iface) {
+    const body = iface[1].replace(/\/\/[^\n]*/g, '');
+    [...body.matchAll(/\bint\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)].forEach((m, i) => {
+      slots[m[1]] = 3 + i;
+    });
+  }
+  check('the Core Audio interface was found', !!iface);
+  check('GetMasterVolumeLevelScalar is at slot 9', slots.GetMasterVolumeLevelScalar === 9, slots.GetMasterVolumeLevelScalar);
+  check('SetMute is at slot 14', slots.SetMute === 14, slots.SetMute);
+  check('GetMute is at slot 15', slots.GetMute === 15, slots.GetMute);
+
   const doc = path.join(os.homedir(), 'shine-doc-test.txt');
   fs.writeFileSync(doc, 'hello world\n');
   const edited = await execute('edit_document', { path: doc, mode: 'find_replace', find: 'world', replace: 'Shine' });

@@ -11,6 +11,7 @@ const { pipeline } = require('node:stream/promises');
 
 const { TOOL_MAP, normaliseArgs } = require('./tools');
 const { requireOk } = require('./result');
+const { clamp, resolvePath } = require('./util');
 
 /**
  * Everything that depends on which machine this is runs in platform/.
@@ -109,41 +110,6 @@ function formatWhen(ms) {
 /* ------------------------------------------------------------------ */
 /* Windows helpers                                                    */
 /* ------------------------------------------------------------------ */
-
-const CORE_AUDIO_CSHARP = `
-using System;
-using System.Runtime.InteropServices;
-[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IAudioEndpointVolume {
-  int _0(); int _1(); int _2(); int _3();
-  int SetMasterVolumeLevelScalar(float level, ref Guid ctx);
-  int _5();
-  int GetMasterVolumeLevelScalar(out float level);
-  int _7();
-  int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid ctx);
-  int GetMute(out bool mute);
-}
-[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDevice { int Activate(ref System.Guid id, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); }
-[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDeviceEnumerator { int _0(); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev); }
-[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject { }
-public static class Audio {
-  static IAudioEndpointVolume Vol() {
-    var e = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
-    IMMDevice dev;
-    Marshal.ThrowExceptionForHR(e.GetDefaultAudioEndpoint(0, 1, out dev));
-    var iid = typeof(IAudioEndpointVolume).GUID;
-    object o;
-    Marshal.ThrowExceptionForHR(dev.Activate(ref iid, 23, IntPtr.Zero, out o));
-    return (IAudioEndpointVolume)o;
-  }
-  public static int GetVolume() { float v; Marshal.ThrowExceptionForHR(Vol().GetMasterVolumeLevelScalar(out v)); return (int)Math.Round(v * 100); }
-  public static bool GetMute() { bool m; Marshal.ThrowExceptionForHR(Vol().GetMute(out m)); return m; }
-  public static void SetVolume(int level) { var g = Guid.Empty; Vol().SetMasterVolumeLevelScalar(Math.Max(0, Math.Min(100, level)) / 100f, ref g); }
-  public static void SetMute(bool mute) { var g = Guid.Empty; Vol().SetMute(mute, ref g); }
-}
-`;
 
 /**
  * The user32 declarations. Extracted into platform/win32.js so that both
@@ -292,23 +258,6 @@ const impl = {
     return { path: dir, created: true };
   },
 
-  async delete_path(args) {
-    const target = resolvePath(args.path);
-    const st = await fsp.lstat(target).catch(() => null);
-    if (!st) throw new Error(`Nothing to delete at ${target}`);
-
-    if (!args.permanent) {
-      const script = st.isDirectory()
-        ? `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(${psQuote(target)}, 'OnlyErrorDialogs', 'SendToRecycleBin')`
-        : `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(${psQuote(target)}, 'OnlyErrorDialogs', 'SendToRecycleBin')`;
-      const res = await runPowerShell(script, { timeoutMs: 30000 });
-      if (res.ok) return { path: target, deleted: true, permanent: false, note: 'Moved to the Recycle Bin.' };
-    }
-
-    await fsp.rm(target, { recursive: true, force: true });
-    return { path: target, deleted: true, permanent: true, note: 'Permanently deleted.' };
-  },
-
   async move_path(args) {
     const from = resolvePath(args.from);
     const to = resolvePath(args.to);
@@ -437,24 +386,6 @@ const impl = {
    */
 
   /** Runs a .bat, .cmd or .ps1 script the user points at. */
-  async run_script_file(args) {
-    const file = String(args.path || '').trim();
-    if (!file) throw new Error('run_script_file needs a path to a .bat, .cmd or .ps1 file.');
-    if (!fs.existsSync(file)) throw new Error(`That script does not exist: ${file}`);
-    const ext = path.extname(file).toLowerCase();
-    if (!['.bat', '.cmd', '.ps1'].includes(ext)) {
-      throw new Error(`run_script_file only runs .bat, .cmd and .ps1 files, not "${ext}".`);
-    }
-    const command = ext === '.ps1' ? `& ${psQuote(file)}` : `cmd.exe /c ${psQuote(file)}`;
-    const r = await runPowerShell(command, { timeoutMs: 120000 });
-    return {
-      path: file,
-      exitCode: r.code,
-      ok: r.ok,
-      stdout: String(r.stdout || '').slice(0, 4000),
-      stderr: String(r.stderr || '').slice(0, 2000),
-    };
-  },
 
   /**
    * Edits the text inside a document.
@@ -531,28 +462,6 @@ const impl = {
       height: source.thumbnail.getSize().height,
       note: 'Saved as a PNG. Offer the file to the user with open_path, or open it yourself to look at it.',
     };
-  },
-
-  async get_volume() {
-    const r = await runPowerShell(`Add-Type -TypeDefinition @'\n${CORE_AUDIO_CSHARP}\n'@ -Language CSharp; [Audio]::GetVolume(); [Audio]::GetMute()`, { timeoutMs: 20000 });
-    const [level, mute] = (r.stdout || '').split(/\s+/);
-    if (!r.ok) throw new Error(`Could not read the volume: ${r.stderr || 'unknown error'}`);
-    return { level: Number(level) || 0, muted: String(mute).trim().toLowerCase() === 'true' };
-  },
-
-  async set_volume(args) {
-    const parts = [];
-    if (typeof args.level === 'number' && !Number.isNaN(args.level)) {
-      const level = clamp(Math.round(args.level), 0, 100);
-      parts.push(`[Audio]::SetVolume(${level})`);
-    }
-    if (typeof args.mute === 'boolean') {
-      parts.push(`[Audio]::SetMute(${args.mute ? '$true' : '$false'})`);
-    }
-    if (!parts.length) throw new Error('set_volume needs a level (0-100) or a mute flag.');
-    const r = await runPowerShell(`Add-Type -TypeDefinition @'\n${CORE_AUDIO_CSHARP}\n'@ -Language CSharp; ${parts.join('; ')}`, { timeoutMs: 20000 });
-    await requireOk(r, 'set_volume');
-    return { level: typeof args.level === 'number' ? clamp(Math.round(args.level), 0, 100) : undefined, mute: args.mute };
   },
 
   async read_clipboard() {
@@ -773,49 +682,11 @@ $r::SystemParametersInfo(0x031A, 0, 0, 0x0002) | Out-Null`;
     if (!r.ok) throw new Error(`Could not change the appearance settings: ${r.stderr || 'unknown error'}`);
     return { changed: changes, note: 'Sign-out and back in if some windows do not repaint immediately.' };
   },
-
-  async system_power(args) {
-    const action = String(args.action || '').toLowerCase();
-    const delay = clamp(Number(args.delaySeconds ?? 15), 0, 300);
-    const grace = delay > 0 ? `Start-Sleep -Seconds ${delay}; ` : '';
-
-    switch (action) {
-      case 'lock':
-        await runPowerShell(`${grace}rundll32.exe user32.dll,LockWorkStation`, { timeoutMs: (delay + 10) * 1000 });
-        return { action, delaySeconds: delay, note: 'The PC locks when the timer finishes.' };
-      case 'signout':
-        await runPowerShell(`${grace}(New-Object -ComObject WScript.Shell).SendKeys('%{F4}'); Start-Sleep -Milliseconds 400`, { timeoutMs: (delay + 10) * 1000 });
-        return { action, note: 'Sign-out was requested through the window close dialog.' };
-      case 'sleep':
-        await runPowerShell(`${grace}rundll32.exe powrprof.dll,SetSuspendState 0,1,0`, { timeoutMs: (delay + 15) * 1000 });
-        return { action, delaySeconds: delay };
-      case 'restart':
-        await runPowerShell(`${grace}Stop-Computer -Force`, { timeoutMs: (delay + 15) * 1000 });
-        return { action, delaySeconds: delay, note: 'Shutting down. Everything open will close.' };
-      case 'shutdown':
-        await runPowerShell(`${grace}Stop-Computer -Force`, { timeoutMs: (delay + 15) * 1000 });
-        return { action, delaySeconds: delay, note: 'Shutting down. Everything open will close.' };
-      default:
-        throw new Error(`Unknown power action "${action}".`);
-    }
-  },
 };
 
 /* ------------------------------------------------------------------ */
 /* Dispatch                                                           */
 /* ------------------------------------------------------------------ */
-
-function clamp(n, min, max) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return min;
-  return Math.max(min, Math.min(max, v));
-}
-
-function resolvePath(p) {
-  const raw = String(p ?? '').trim().replace(/^~(?=$|[\\/])/, os.homedir());
-  if (!raw) return os.homedir();
-  return path.resolve(raw);
-}
 
 function safeOsVersion() {
   try {

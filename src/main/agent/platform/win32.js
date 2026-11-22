@@ -31,4 +31,55 @@ public static class Win {
 }
 `;
 
-module.exports = { USER32_CSHARP };
+/**
+ * The Core Audio endpoint declarations.
+ *
+ * Same placement argument as USER32_CSHARP above: get_volume and set_volume
+ * paste this into a script, so it cannot live only in executor.js - a
+ * platform module cannot reach into executor without the two importing
+ * each other.
+ */
+
+const CORE_AUDIO_CSHARP = `
+using System;
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+  int _0(); int _1(); int _2(); int _3();
+  int SetMasterVolumeLevelScalar(float level, ref Guid ctx);
+  int _5();
+  int GetMasterVolumeLevelScalar(out float level);
+  // Slots 10-13 are the four channel methods. They are placeholders because
+  // nothing here changes a single channel - but they must be counted, or
+  // SetMute and GetMute land on GetChannelVolumeLevel and answer
+  // E_INVALIDARG ("Value does not fall within the expected range").
+  // Verified against the machine rather than the header: the header order
+  // puts GetMasterVolumeLevelScalar at 11, where it fails, and at 9, where
+  // every one of GetVolume, SetVolume, GetMute and SetMute works.
+  int _8(); int _9(); int _10(); int _11();
+  int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid ctx);
+  int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+}
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice { int Activate(ref System.Guid id, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); }
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator { int _0(); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice dev); }
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumeratorComObject { }
+public static class Audio {
+  static IAudioEndpointVolume Vol() {
+    var e = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
+    IMMDevice dev;
+    Marshal.ThrowExceptionForHR(e.GetDefaultAudioEndpoint(0, 1, out dev));
+    var iid = typeof(IAudioEndpointVolume).GUID;
+    object o;
+    Marshal.ThrowExceptionForHR(dev.Activate(ref iid, 23, IntPtr.Zero, out o));
+    return (IAudioEndpointVolume)o;
+  }
+  public static int GetVolume() { float v; Marshal.ThrowExceptionForHR(Vol().GetMasterVolumeLevelScalar(out v)); return (int)Math.Round(v * 100); }
+  public static bool GetMute() { bool m; Marshal.ThrowExceptionForHR(Vol().GetMute(out m)); return m; }
+  public static void SetVolume(int level) { var g = Guid.Empty; Vol().SetMasterVolumeLevelScalar(Math.Max(0, Math.Min(100, level)) / 100f, ref g); }
+  public static void SetMute(bool mute) { var g = Guid.Empty; Vol().SetMute(mute, ref g); }
+}
+`;
+
+module.exports = { USER32_CSHARP, CORE_AUDIO_CSHARP };

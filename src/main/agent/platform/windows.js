@@ -15,13 +15,17 @@
  * activity log says what actually happened.
  */
 
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { exec, execFile } = require('node:child_process');
 
 // requireOk lives in its own file because a platform module cannot import
-// it from executor.js without the two importing each other.
+// it from executor.js without the two importing each other. clamp and
+// resolvePath are in util.js for the same reason.
 const { requireOk } = require('../result');
-const { USER32_CSHARP } = require('./win32');
+const { clamp, resolvePath } = require('../util');
+const { USER32_CSHARP, CORE_AUDIO_CSHARP } = require('./win32');
 
 /**
  * Runs a PowerShell script.
@@ -534,6 +538,90 @@ Write-Output "TYPED"`;
     if (!keys) throw new Error('press_keys needs a key string.');
     await requireOk(await runPowerShell(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(${psQuote(keys)})`, { sta: true, timeoutMs: 15000 }), 'press_keys');
     return { keys, sent: true };
+  },
+
+  async delete_path(args) {
+    const target = resolvePath(args.path);
+    const st = await fsp.lstat(target).catch(() => null);
+    if (!st) throw new Error(`Nothing to delete at ${target}`);
+
+    if (!args.permanent) {
+      const script = st.isDirectory()
+        ? `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(${psQuote(target)}, 'OnlyErrorDialogs', 'SendToRecycleBin')`
+        : `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(${psQuote(target)}, 'OnlyErrorDialogs', 'SendToRecycleBin')`;
+      const res = await runPowerShell(script, { timeoutMs: 30000 });
+      if (res.ok) return { path: target, deleted: true, permanent: false, note: 'Moved to the Recycle Bin.' };
+    }
+
+    await fsp.rm(target, { recursive: true, force: true });
+    return { path: target, deleted: true, permanent: true, note: 'Permanently deleted.' };
+  },
+
+  async run_script_file(args) {
+    const file = String(args.path || '').trim();
+    if (!file) throw new Error('run_script_file needs a path to a .bat, .cmd or .ps1 file.');
+    if (!fs.existsSync(file)) throw new Error(`That script does not exist: ${file}`);
+    const ext = path.extname(file).toLowerCase();
+    if (!['.bat', '.cmd', '.ps1'].includes(ext)) {
+      throw new Error(`run_script_file only runs .bat, .cmd and .ps1 files, not "${ext}".`);
+    }
+    const command = ext === '.ps1' ? `& ${psQuote(file)}` : `cmd.exe /c ${psQuote(file)}`;
+    const r = await runPowerShell(command, { timeoutMs: 120000 });
+    return {
+      path: file,
+      exitCode: r.code,
+      ok: r.ok,
+      stdout: String(r.stdout || '').slice(0, 4000),
+      stderr: String(r.stderr || '').slice(0, 2000),
+    };
+  },
+
+  async get_volume() {
+    const r = await runPowerShell(`Add-Type -TypeDefinition @'\n${CORE_AUDIO_CSHARP}\n'@ -Language CSharp; [Audio]::GetVolume(); [Audio]::GetMute()`, { timeoutMs: 20000 });
+    const [level, mute] = (r.stdout || '').split(/\s+/);
+    if (!r.ok) throw new Error(`Could not read the volume: ${r.stderr || 'unknown error'}`);
+    return { level: Number(level) || 0, muted: String(mute).trim().toLowerCase() === 'true' };
+  },
+
+  async set_volume(args) {
+    const parts = [];
+    if (typeof args.level === 'number' && !Number.isNaN(args.level)) {
+      const level = clamp(Math.round(args.level), 0, 100);
+      parts.push(`[Audio]::SetVolume(${level})`);
+    }
+    if (typeof args.mute === 'boolean') {
+      parts.push(`[Audio]::SetMute(${args.mute ? '$true' : '$false'})`);
+    }
+    if (!parts.length) throw new Error('set_volume needs a level (0-100) or a mute flag.');
+    const r = await runPowerShell(`Add-Type -TypeDefinition @'\n${CORE_AUDIO_CSHARP}\n'@ -Language CSharp; ${parts.join('; ')}`, { timeoutMs: 20000 });
+    await requireOk(r, 'set_volume');
+    return { level: typeof args.level === 'number' ? clamp(Math.round(args.level), 0, 100) : undefined, mute: args.mute };
+  },
+
+  async system_power(args) {
+    const action = String(args.action || '').toLowerCase();
+    const delay = clamp(Number(args.delaySeconds ?? 15), 0, 300);
+    const grace = delay > 0 ? `Start-Sleep -Seconds ${delay}; ` : '';
+
+    switch (action) {
+      case 'lock':
+        await runPowerShell(`${grace}rundll32.exe user32.dll,LockWorkStation`, { timeoutMs: (delay + 10) * 1000 });
+        return { action, delaySeconds: delay, note: 'The PC locks when the timer finishes.' };
+      case 'signout':
+        await runPowerShell(`${grace}(New-Object -ComObject WScript.Shell).SendKeys('%{F4}'); Start-Sleep -Milliseconds 400`, { timeoutMs: (delay + 10) * 1000 });
+        return { action, note: 'Sign-out was requested through the window close dialog.' };
+      case 'sleep':
+        await runPowerShell(`${grace}rundll32.exe powrprof.dll,SetSuspendState 0,1,0`, { timeoutMs: (delay + 15) * 1000 });
+        return { action, delaySeconds: delay };
+      case 'restart':
+        await runPowerShell(`${grace}Stop-Computer -Force`, { timeoutMs: (delay + 15) * 1000 });
+        return { action, delaySeconds: delay, note: 'Shutting down. Everything open will close.' };
+      case 'shutdown':
+        await runPowerShell(`${grace}Stop-Computer -Force`, { timeoutMs: (delay + 15) * 1000 });
+        return { action, delaySeconds: delay, note: 'Shutting down. Everything open will close.' };
+      default:
+        throw new Error(`Unknown power action "${action}".`);
+    }
   },
 };
 
