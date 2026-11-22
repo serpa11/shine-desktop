@@ -247,6 +247,44 @@ section('Linux: shell choice');
   const failDetail = linux.windowsUnavailable({ reason: 'failed', detail: 'Error: no display' });
   check('a failure carries the detail through', failDetail.includes('no display'), failDetail);
 
+  section('Linux: the pointer and keyboard');
+
+  check(
+    'all five input tools are provided',
+    ['move_cursor', 'click', 'type_text', 'type_command', 'press_keys'].every(
+      (k) => typeof linux.toolImpls[k] === 'function'
+    ),
+    Object.keys(linux.toolImpls).join(',')
+  );
+
+  check('Enter is translated', JSON.stringify(linux.toXdotoolKeys('{ENTER}')) === '["Return"]', JSON.stringify(linux.toXdotoolKeys('{ENTER}')));
+  check('a chord is translated', JSON.stringify(linux.toXdotoolKeys('^c')) === '["ctrl+c"]', JSON.stringify(linux.toXdotoolKeys('^c')));
+  check('two modifiers are translated', JSON.stringify(linux.toXdotoolKeys('^+a')) === '["ctrl+shift+a"]', JSON.stringify(linux.toXdotoolKeys('^+a')));
+  check('an xdotool spelling passes through', JSON.stringify(linux.toXdotoolKeys('ctrl+shift+t')) === '["ctrl+shift+t"]', JSON.stringify(linux.toXdotoolKeys('ctrl+shift+t')));
+  check('a function key is translated', JSON.stringify(linux.toXdotoolKeys('{F5}')) === '["F5"]', JSON.stringify(linux.toXdotoolKeys('{F5}')));
+  check('a literal plus survives', JSON.stringify(linux.toXdotoolKeys('{+}')) === '["+"]', JSON.stringify(linux.toXdotoolKeys('{+}')));
+  // A space between them is the space key, not a separator - which is what
+  // it means in SendKeys, and why {ENTER}{TAB} (no space) is how the model
+  // asks for two keys with nothing between them.
+  check('several keys become several keysyms', JSON.stringify(linux.toXdotoolKeys('{ENTER} {TAB}')) === '["Return","space","Tab"]', JSON.stringify(linux.toXdotoolKeys('{ENTER} {TAB}')));
+  check('a space is a key rather than a separator', JSON.stringify(linux.toXdotoolKeys('a b')) === '["a","space","b"]', JSON.stringify(linux.toXdotoolKeys('a b')));
+  check('nothing yields no keysyms', linux.toXdotoolKeys('').length === 0);
+
+  check('a pointer position is read back', linux.parseMouseLocation('x=123\ny=456\nscreen=0\nwindow=1\n') === '123,456', String(linux.parseMouseLocation('x=123\ny=456\nscreen=0\nwindow=1\n')));
+  check('a negative coordinate is read', linux.parseMouseLocation('x=-4\ny=7\n') === '-4,7', String(linux.parseMouseLocation('x=-4\ny=7\n')));
+  check('no position reads as null', linux.parseMouseLocation('nothing here') === null);
+
+  // These three all reject before anything is spawned, so they hold on a
+  // machine with neither xdotool nor a display.
+  const badMove = await linux.toolImpls.move_cursor({ x: 'left', y: 2 }).catch((e) => e);
+  check('move_cursor refuses non-numeric coordinates', badMove instanceof Error && /numeric x and y/.test(badMove.message), String(badMove));
+
+  const badClick = await linux.toolImpls.click({ button: 'weird' }).catch((e) => e);
+  check('click refuses an unknown button', badClick instanceof Error && /left, right or middle/.test(badClick.message), String(badClick));
+
+  const badShell = await linux.toolImpls.type_command({ command: 'ls', shell: 'cmd' }).catch((e) => e);
+  check('type_command refuses a Windows shell name', badShell instanceof Error && /bash/.test(badShell.message), String(badShell));
+
   section('Linux: what runCommand reports');
 
   // Only what runCommand() *reports* is asserted. Whether sh actually exists

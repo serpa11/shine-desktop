@@ -492,6 +492,146 @@ function windowsUnavailable(scan) {
   return `Could not list windows${scan.detail ? `: ${String(scan.detail).slice(0, 400)}` : ''}.`;
 }
 
+/* ------------------------------------------------------------------ */
+/* Pointer, keyboard and terminals                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Reads the pointer position.
+ *
+ * The same shape the Windows side reports - "x,y" - so nothing downstream
+ * has to care which one answered.
+ */
+function parseMouseLocation(stdout) {
+  const x = /^x=(-?\d+)\s*$/m.exec(String(stdout || ''));
+  const y = /^y=(-?\d+)\s*$/m.exec(String(stdout || ''));
+  if (!x || !y) return null;
+  return `${x[1]},${y[1]}`;
+}
+
+async function cursorPosition() {
+  const r = await runCommand('xdotool getmouselocation --shell', { timeoutMs: 10000 });
+  return parseMouseLocation(r.stdout);
+}
+
+/**
+ * SendKeys spellings, translated to xdotool keysyms.
+ *
+ * Windows writes a key as {ENTER} and a chord as ^c; xdotool writes Return
+ * and ctrl+c. Rather than documenting the Linux spelling and hoping the
+ * model reads it, the Windows one is translated, so the same prompt works on
+ * both machines - and because it is a pure function it can be pinned by a
+ * test instead of by typing into a real window.
+ */
+const KEY_ALIASES = {
+  ENTER: 'Return',
+  RETURN: 'Return',
+  TAB: 'Tab',
+  ESC: 'Escape',
+  ESCAPE: 'Escape',
+  BACKSPACE: 'BackSpace',
+  BS: 'BackSpace',
+  DELETE: 'Delete',
+  DEL: 'Delete',
+  INSERT: 'Insert',
+  INS: 'Insert',
+  UP: 'Up',
+  DOWN: 'Down',
+  LEFT: 'Left',
+  RIGHT: 'Right',
+  HOME: 'Home',
+  END: 'End',
+  PGUP: 'Prior',
+  PGDN: 'Next',
+  PAGEUP: 'Prior',
+  PAGEDOWN: 'Next',
+  SPACE: 'space',
+  CAPSLOCK: 'Caps_Lock',
+  NUMLOCK: 'Num_Lock',
+  SCROLLLOCK: 'Scroll_Lock',
+  PRINTSCREEN: 'Print',
+  WINDOW: 'Super_L',
+  WIN: 'Super_L',
+  MENU: 'Menu',
+};
+
+function translateChunk(chunk) {
+  // {F5}, {ENTER}, and {+} for a literal plus - SendKeys writes a printable
+  // key inside braces when it collides with a modifier character.
+  const braced = /^\{([^{}]*)\}$/.exec(chunk);
+  if (braced) {
+    const name = braced[1].toUpperCase();
+    if (/^F\d{1,2}$/.test(name)) return name;
+    if (KEY_ALIASES[name]) return KEY_ALIASES[name];
+    if (braced[1].length === 1) return braced[1];
+    return chunk; // unknown name: leave it for xdotool to reject by name
+  }
+
+  // A leading run of ^ + % is ctrl, shift and alt applied to the next key.
+  const mods = /^([~^+%]+)(\S+)$/.exec(chunk);
+  if (mods) {
+    const keys = [];
+    let key = mods[2];
+    for (const c of mods[1]) {
+      if (c === '^') keys.push('ctrl');
+      else if (c === '+') keys.push('shift');
+      else if (c === '%') keys.push('alt');
+      else if (c === '~') key = 'Return'; // ~ means Enter
+    }
+    return [...keys, key].join('+');
+  }
+
+  return chunk;
+}
+
+/**
+ * Turns a key string into the list of keysyms xdotool should press.
+ *
+ * A space is returned as its own keysym rather than left as the separator,
+ * because that is what it means in SendKeys - `a b` is three keystrokes, not
+ * two - and each result is passed to xdotool as its own quoted argument, so
+ * a key name can never be read as shell syntax.
+ *
+ * @param {string} spec
+ * @returns {string[]}
+ */
+function toXdotoolKeys(spec) {
+  const s = String(spec || '');
+  if (!s.trim()) return [];
+  const out = [];
+  for (const chunk of s.split(/(\s+)/)) {
+    if (!chunk) continue;
+    if (/^\s+$/.test(chunk)) {
+      out.push('space');
+      continue;
+    }
+    const translated = translateChunk(chunk);
+    if (translated) out.push(translated);
+  }
+  return out;
+}
+
+const TERMINALS = ['x-terminal-emulator', 'gnome-terminal', 'konsole', 'xfce4-terminal', 'kitty', 'alacritty', 'xterm'];
+
+/**
+ * Opens a terminal and returns as soon as it is on its way.
+ *
+ * Each desktop names its terminal differently and they daemonise in their
+ * own way, so the first one that exists is started in the background with
+ * its output discarded - the same two rules as starting any other program,
+ * for the same two reasons.
+ */
+async function openTerminal() {
+  for (const term of TERMINALS) {
+    const res = await runCommand(
+      [`command -v ${shellQuote(term)} >/dev/null 2>&1 || exit 3`, `${term} >/dev/null 2>&1 &`, 'echo LAUNCHED'].join('\n'),
+      { timeoutMs: 15000 }
+    );
+    if (res.ok && /LAUNCHED/.test(res.stdout || '')) return term;
+  }
+  return null;
+}
+
 /**
  * The tools whose behaviour *is* the desktop.
  *
@@ -568,6 +708,121 @@ const toolImpls = {
     filtered.sort((a, b) => (b.MemoryMB || 0) - (a.MemoryMB || 0));
     return { count: filtered.length, processes: filtered.slice(0, 120) };
   },
+
+  async move_cursor(args) {
+    const x = Number(args.x);
+    const y = Number(args.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error('move_cursor needs numeric x and y screen coordinates. Use list_windows or take_screenshot to find where to click.');
+    }
+    const r = await runCommand(`xdotool mousemove ${Math.round(x)} ${Math.round(y)}`, { timeoutMs: 10000 });
+    if (!r.ok) throw new Error(`Could not move the cursor: ${r.stderr || r.stdout}`);
+    return { x: Math.round(x), y: Math.round(y), position: await cursorPosition() };
+  },
+
+  async click(args) {
+    const x = args.x === undefined ? NaN : Number(args.x);
+    const y = args.y === undefined ? NaN : Number(args.y);
+    const button = String(args.button || 'left').toLowerCase();
+    const BUTTONS = { left: 1, middle: 2, right: 3 };
+    if (BUTTONS[button] === undefined) {
+      throw new Error(`Unknown mouse button "${args.button}". Use left, right or middle.`);
+    }
+
+    const times = Math.max(1, Math.min(5, Number(args.clicks) || 1));
+    const steps = [];
+
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      steps.push(`xdotool mousemove ${Math.round(x)} ${Math.round(y)}`);
+      steps.push(`sleep ${Math.max(60, Number(args.settle) || 120) / 1000}`);
+    }
+
+    if (args.wheel !== undefined && args.wheel !== null && Number(args.wheel) !== 0) {
+      // 4 is wheel up and 5 is wheel down - the numbering X11 has used since
+      // long before xdotool existed.
+      const notches = Math.max(-10, Math.min(10, Number(args.wheel) || 0));
+      const key = notches > 0 ? 4 : 5;
+      for (let i = 0; i < Math.abs(notches); i += 1) steps.push(`xdotool click ${key}`);
+      steps.push('sleep 0.15');
+    }
+
+    for (let i = 0; i < times; i += 1) {
+      steps.push(`xdotool click ${BUTTONS[button]}`);
+      if (i < times - 1) steps.push('sleep 0.07');
+    }
+
+    steps.push('sleep 0.15');
+    // Read-back is not fatal: the clicks already happened, and a pointer
+    // position that cannot be read should not turn a success into a failure.
+    steps.push('xdotool getmouselocation --shell 2>/dev/null || true');
+
+    const r = await runCommand(steps.join('\n'), { timeoutMs: 20000 });
+    if (!r.ok) throw new Error(`Could not click: ${r.stderr || r.stdout}`);
+    return {
+      button: args.button || 'left',
+      clicks: args.clicks ?? 1,
+      at: Number.isFinite(x) ? { x: Math.round(x), y: Math.round(y) } : 'current position',
+      position: parseMouseLocation(r.stdout),
+    };
+  },
+
+  async type_text(args) {
+    const text = String(args.text ?? '');
+    if (!text) throw new Error('type_text needs text.');
+    // The same pause the Windows side takes before SendKeys, so the window
+    // has a moment to take focus; --delay paces the keystrokes after that.
+    await requireOk(
+      await runCommand(`sleep 0.25 && xdotool type --clearmodifiers --delay 12 ${shellQuote(text)}`, { timeoutMs: 20000 }),
+      'type_text'
+    );
+    return { typed: text.length, note: 'Text was sent to the focused window.' };
+  },
+
+  async type_command(args) {
+    const command = String(args.command || '').trim();
+    if (!command) throw new Error('type_command needs a command.');
+    const shell = String(args.shell || 'bash').toLowerCase();
+    if (!['bash', 'sh', 'terminal'].includes(shell)) {
+      throw new Error(`shell must be "bash", "sh" or "terminal", not "${shell}".`);
+    }
+
+    const opened = await openTerminal();
+    if (!opened) {
+      throw new Error('No terminal was found on this desktop. Install one - "sudo apt install xterm" is the smallest - and try again.');
+    }
+
+    // Give the window time to appear and take focus before anything is typed
+    // into it: whatever has focus when xdotool runs is what receives the keys.
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+
+    const keys = `xdotool type --clearmodifiers --delay 12 ${shellQuote(command)}`;
+    const enter = args.pressEnter === false ? '' : '\nxdotool key Return';
+    const r = await runCommand(`sleep 0.2 && ${keys}${enter}`, { timeoutMs: 40000 });
+    if (!r.ok) throw new Error(`Could not type the command: ${r.stderr || r.stdout}`);
+
+    return {
+      command,
+      shell,
+      pressedEnter: args.pressEnter !== false,
+      note:
+        args.pressEnter === false
+          ? 'The command was typed into a new terminal window and left there for you to read.'
+          : 'The command was typed into a new terminal window and run.',
+    };
+  },
+
+  async press_keys(args) {
+    const keys = String(args.keys || '');
+    if (!keys) throw new Error('press_keys needs a key string.');
+
+    const syms = toXdotoolKeys(keys);
+    // Each keysym is quoted separately so it arrives as its own argument:
+    // a key name must never be read as shell syntax, and xdotool takes a
+    // list of keysyms rather than one string.
+    const list = syms.map(shellQuote).join(' ');
+    await requireOk(await runCommand(`xdotool key --clearmodifiers ${list}`, { timeoutMs: 15000 }), 'press_keys');
+    return { keys, sent: true };
+  },
 };
 
 /**
@@ -623,4 +878,9 @@ module.exports = {
   scanWindows,
   windowsUnavailable,
   processRows,
+  parseMouseLocation,
+  toXdotoolKeys,
+  translateChunk,
+  TERMINALS,
+  openTerminal,
 };

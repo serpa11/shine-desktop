@@ -152,56 +152,6 @@ public static class Audio {
  */
 const { USER32_CSHARP } = require('./platform/win32');
 
-/** Reads the mouse pointer position, for confirming where a move landed. */
-const GET_CURSOR_PS = `
-$p = New-Object Win+POINT
-[void][Win]::GetCursorPos([ref]$p)
-Write-Output ("CURSOR:" + $p.X + "," + $p.Y)
-`;
-
-/**
- * Moves the pointer and optionally clicks.
- *
- * This is what lets Shine drive an app it has no API for - the user asked for
- * VMware specifically, where every step is a click somewhere on screen. There
- * is no mouse control at all without this.
- */
-function mouseScript({ x, y, button = 'left', clicks = 1, wheel, settle = 120 }) {
-  const btn = String(button || 'left').toLowerCase();
-  const down = { left: 'LEFTDOWN', right: 'RIGHTDOWN', middle: 'MIDDLEDOWN' }[btn];
-  const up = { left: 'LEFTUP', right: 'RIGHTUP', middle: 'MIDDLEUP' }[btn];
-  if (!down) throw new Error(`Unknown mouse button "${button}". Use left, right or middle.`);
-
-  const times = Math.max(1, Math.min(5, Number(clicks) || 1));
-  const steps = [];
-
-  if (Number.isFinite(x) && Number.isFinite(y)) {
-    steps.push(`[void][Win]::SetCursorPos(${Math.round(x)}, ${Math.round(y)})`);
-    steps.push(`Start-Sleep -Milliseconds ${Math.max(60, Number(settle) || 120)}`);
-  }
-
-  if (wheel !== undefined && wheel !== null && Number(wheel) !== 0) {
-    // One notch is 120, the value Windows sends for a wheel click.
-    const notches = Math.max(-10, Math.min(10, Number(wheel) || 0));
-    steps.push(`[Win]::mouse_event([Win]::WHEEL, 0, 0, ${notches * 120}, [IntPtr]::Zero)`);
-    steps.push('Start-Sleep -Milliseconds 150');
-  }
-
-  for (let i = 0; i < times; i += 1) {
-    steps.push(`[Win]::mouse_event([Win]::${down}, 0, 0, 0, [IntPtr]::Zero)`);
-    steps.push('Start-Sleep -Milliseconds 45');
-    steps.push(`[Win]::mouse_event([Win]::${up}, 0, 0, 0, [IntPtr]::Zero)`);
-    if (i < times - 1) steps.push('Start-Sleep -Milliseconds 70');
-  }
-
-  steps.push('Start-Sleep -Milliseconds 150');
-  steps.push(GET_CURSOR_PS.trim());
-
-  return `${USER32_CSHARP}
-Add-Type -AssemblyName System.Windows.Forms
-[void][Win]::SetProcessDPIAware()
-${steps.join('\n')}`;
-}
 
 /* ------------------------------------------------------------------ */
 /* Tool implementations                                               */
@@ -475,44 +425,8 @@ const impl = {
 
 
 
-  async move_cursor(args) {
-    const x = Number(args.x);
-    const y = Number(args.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      throw new Error('move_cursor needs numeric x and y screen coordinates. Use list_windows or take_screenshot to find where to click.');
-    }
-    const r = await runPowerShell(mouseScript({ x, y }), { sta: true, timeoutMs: 20000 });
-    if (!r.ok) throw new Error(`Could not move the cursor: ${r.stderr}`);
-    return { x: Math.round(x), y: Math.round(y), position: /CURSOR:(\d+,\d+)/.exec(r.stdout)?.[1] || null };
-  },
 
-  async click(args) {
-    const r = await runPowerShell(
-      mouseScript({
-        x: args.x === undefined ? NaN : Number(args.x),
-        y: args.y === undefined ? NaN : Number(args.y),
-        button: args.button || 'left',
-        clicks: args.clicks ?? 1,
-        wheel: args.wheel,
-        settle: args.settle,
-      }),
-      { sta: true, timeoutMs: 20000 }
-    );
-    if (!r.ok) throw new Error(`Could not click: ${r.stderr}`);
-    return {
-      button: args.button || 'left',
-      clicks: args.clicks ?? 1,
-      at: Number.isFinite(Number(args.x)) ? { x: Math.round(Number(args.x)), y: Math.round(Number(args.y)) } : 'current position',
-      position: /CURSOR:(\d+,\d+)/.exec(r.stdout)?.[1] || null,
-    };
-  },
 
-  async type_text(args) {
-    const text = String(args.text ?? '');
-    if (!text) throw new Error('type_text needs text.');
-    await requireOk(await runPowerShell(`Start-Sleep -Milliseconds 250; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(${psQuote(text)}); Start-Sleep -Milliseconds 150`, { sta: true, timeoutMs: 20000 }), 'type_text');
-    return { typed: text.length, note: 'Text was sent to the focused window.' };
-  },
 
   /**
    * Types a command out for the user to see, rather than running it quietly.
@@ -521,43 +435,6 @@ const impl = {
    * PowerShell command into their terminal so they can read it, run it
    * themselves, or let Shine go on to press Enter.
    */
-  async type_command(args) {
-    const command = String(args.command || '').trim();
-    if (!command) throw new Error('type_command needs a command.');
-    const shell = String(args.shell || 'powershell').toLowerCase();
-    if (!['powershell', 'cmd', 'terminal'].includes(shell)) {
-      throw new Error(`shell must be "powershell", "cmd" or "terminal", not "${shell}".`);
-    }
-
-    // Open a terminal of the requested kind, unless one is already focused.
-    const launch =
-      shell === 'cmd'
-        ? `Start-Process cmd.exe -ArgumentList '/k' -WindowStyle Normal`
-        : `Start-Process powershell.exe -ArgumentList '-NoExit','-Command','' -WindowStyle Normal`;
-
-    const script = `
-${launch}
-Start-Sleep -Milliseconds 1400
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.SendKeys]::SendWait('+')
-Start-Sleep -Milliseconds 200
-[System.Windows.Forms.SendKeys]::SendWait(${psQuote(command.replace(/([+^%~(){}[\]])/g, '{$1}'))})
-Start-Sleep -Milliseconds 200
-${args.pressEnter === false ? '' : "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')"}
-Write-Output "TYPED"`;
-
-    const r = await runPowerShell(script, { sta: true, timeoutMs: 40000 });
-    if (!r.ok) throw new Error(`Could not type the command: ${r.stderr}`);
-    return {
-      command,
-      shell,
-      pressedEnter: args.pressEnter !== false,
-      note:
-        args.pressEnter === false
-          ? 'The command was typed into a new terminal window and left there for you to read.'
-          : 'The command was typed into a new terminal window and run.',
-    };
-  },
 
   /** Runs a .bat, .cmd or .ps1 script the user points at. */
   async run_script_file(args) {
@@ -625,12 +502,6 @@ Write-Output "TYPED"`;
     };
   },
 
-  async press_keys(args) {
-    const keys = String(args.keys || '');
-    if (!keys) throw new Error('press_keys needs a key string.');
-    await requireOk(await runPowerShell(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(${psQuote(keys)})`, { sta: true, timeoutMs: 15000 }), 'press_keys');
-    return { keys, sent: true };
-  },
 
 
 
